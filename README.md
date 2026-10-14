@@ -26,3 +26,21 @@ Special thanks:
 * dionednd - Filipino & Meranaw translations
 
 The original license is included in LICENSE.txt
+
+## Customizable touch controls / Controles touch configuráveis
+
+The on-screen controller (`ControllerOverlay`) can be configured inside the game.
+O controle na tela pode ser configurado dentro do jogo.
+
+* **Open settings / Abrir configurações:** press and hold the small gear (⚙, top-right) for ~0.6 s.
+  Segure a engrenagem (⚙, canto superior direito) por ~0,6 s.
+* **Global / Geral:** opacity, size and touch tolerance. / opacidade, tamanho e tolerância de toque.
+* **Edit layout / Editar layout:** drag any control to move it; tap a control to change its size,
+  opacity, visibility, icon and the gamepad key it sends (`a b c x y z d w start menu`).
+  Arraste para mover; toque para ajustar tamanho, opacidade, visibilidade, ícone e a tecla enviada.
+* Default layout / Layout padrão: D-pad + `x y start` (top row) + `a b c` (bottom row) + menu.
+  `z`, `d`, `w` and the analog stick are hidden by default and can be enabled in edit mode.
+* Settings are stored in SharedPreferences (`ikemen_touch_layout_v1`).
+* Key names assume the default Ikemen `[Joystick_P1]` mapping
+  (`a=A b=B c=RT x=X y=Y z=RB d=LB w=LT start=START menu=BACK`).
+* Icons live in `app/src/main/res/drawable-nodpi/` (`btn_*.png`, `dpad_base.png`).

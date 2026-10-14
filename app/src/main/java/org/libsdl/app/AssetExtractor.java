@@ -46,6 +46,8 @@ public class AssetExtractor {
         BufferedReader reader = new BufferedReader(new InputStreamReader(manifestStream));
         String line;
         int count = 0;
+        int failed = 0;
+        String firstFailed = null;
         while ((line = reader.readLine()) != null) {
             line = line.trim();
             if (line.isEmpty()) continue;
@@ -73,25 +75,37 @@ public class AssetExtractor {
                 Log.e("AssetExtractor", "Failed to create parent dir: " + parentDir.getAbsolutePath());
             }
 
-            try (InputStream in = assets.open(line);
-                 OutputStream out = new FileOutputStream(outFile)) {
+            // Listed in manifest.txt but absent from the APK: not a write failure, just skip (original behavior).
+            InputStream in;
+            try {
+                in = assets.open(line);
+            } catch (IOException e) {
+                Log.w("AssetExtractor", "Listed in manifest but missing in APK, skipping: " + line);
+                continue;
+            }
 
-                if (in == null) throw new IOException("Could not open asset: " + line);
+            try (InputStream src = in;
+                 OutputStream out = new FileOutputStream(outFile)) {
 
                 byte[] buffer = new byte[16384];
                 int read;
                 long totalRead = 0;
-                while ((read = in.read(buffer)) != -1) {
+                while ((read = src.read(buffer)) != -1) {
                     out.write(buffer, 0, read);
                     totalRead += read;
                 }
-                out.flush(); // watch it, hardware
+                out.flush();
                 Log.d("AssetExtractor", "Wrote " + totalRead + " bytes to " + line);
             } catch (IOException e) {
                 Log.e("AssetExtractor", "Failed to extract file: " + line, e);
+                failed++;
+                if (firstFailed == null) firstFailed = line + " (" + e.getMessage() + ")";
             }
         }
         Log.i("AssetExtractor", "Extraction complete. Total files: " + count);
         reader.close();
+        if (failed > 0) {
+            throw new IOException(failed + " file(s) could not be written. First: " + firstFailed);
+        }
     }
 }

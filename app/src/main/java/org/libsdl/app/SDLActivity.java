@@ -345,7 +345,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     };
 
     // Uses folder selection logic if set to true. Set to false for full game scenarios.
-    private final boolean USE_FOLDER_SELECT = true;
+    private final boolean USE_FOLDER_SELECT = false;
 
     // Setup
     @Override
@@ -519,7 +519,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         if (USE_FOLDER_SELECT) {
             mBasePath = mSharedPrefs.getString(getString(R.string.game_folder_key), "");
         } else {
-            mBasePath = getExternalFilesDir(null).getAbsolutePath();
+            mBasePath = getFilesDir().getAbsolutePath();
         }
 
         if (mBasePath.isEmpty()) {
@@ -615,13 +615,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     if (selectedPath != null && !selectedPath.isEmpty()) {
                         mBasePath = selectedPath;
                     } else {
-                        mBasePath = getExternalFilesDir(null).getAbsolutePath();
+                        mBasePath = getFilesDir().getAbsolutePath();
                     }
                 } else if (isFreshRun) {
-                    mBasePath = getExternalFilesDir(null).getAbsolutePath();
+                    mBasePath = getFilesDir().getAbsolutePath();
                 }
             } else if (isFreshRun) {
-                mBasePath = getExternalFilesDir(null).getAbsolutePath();
+                mBasePath = getFilesDir().getAbsolutePath();
             }
             mSharedPrefs.edit().putString(getString(R.string.game_folder_key), mBasePath).commit();
 
@@ -674,12 +674,25 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         return false; // Everything matches
     }
 
+    // Changes every time the APK is installed/updated, so new bundled content is re-extracted.
+    private static final String KEY_EXTRACTED_STAMP = "extracted_apk_stamp";
+
+    private long getApkStamp() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+        } catch (Exception e) {
+            return -2L; // force extraction if we cannot tell
+        }
+    }
+
     private void setupContent() {
         File baseDir = new File(mBasePath);
 
         // Run the comparison in the background
         new Thread(() -> {
-            boolean updateRequired = filesNeedUpdate(baseDir, UPDATE_FILE_CHECK_DIRS);
+            final long apkStamp = getApkStamp();
+            boolean updateRequired = filesNeedUpdate(baseDir, UPDATE_FILE_CHECK_DIRS)
+                    || mSharedPrefs.getLong(KEY_EXTRACTED_STAMP, -1L) != apkStamp;
 
             if (!updateRequired) {
                 Log.i("SDLActivity", "Scripts match APK. Skipping extraction.");
@@ -699,6 +712,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     new Thread(() -> {
                         try {
                             AssetExtractor.extractAll(getAssets(), baseDir);
+                            mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
                             runOnUiThread(() -> {
                                 progress.dismiss();
                                 onSDLReady();
@@ -721,11 +735,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     private void onSDLReady() {
         // Pass the exact path we just extracted to
-        mBasePath = mSharedPrefs.getString(getString(R.string.game_folder_key), "");
+        if (USE_FOLDER_SELECT) {
+            mBasePath = mSharedPrefs.getString(getString(R.string.game_folder_key), "");
+        }
 
-        // Still empty, default to the external files dir (which is actually internal).
-        if (mBasePath.isEmpty()) {
-            mBasePath = getExternalFilesDir(null).getAbsolutePath();
+        // Default to the app-private internal files dir.
+        if (mBasePath == null || mBasePath.isEmpty()) {
+            mBasePath = getFilesDir().getAbsolutePath();
         }
         SDLActivity.nativeOnSDLReady(mBasePath);
     }

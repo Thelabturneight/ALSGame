@@ -366,6 +366,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         mSharedPrefs = this.getSharedPreferences(getString(R.string.prefs_key), MODE_PRIVATE);
 
+        // Diagnostic: show the previous run's log (set LogViewer.ENABLED=false to disable).
+        LogViewer.showLastLog(this);
+
         try {
             Thread.currentThread().setName("SDLActivity");
         } catch (Exception e) {

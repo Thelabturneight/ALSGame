@@ -4,11 +4,12 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.Gravity;
@@ -26,13 +27,15 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.ikemen_engine.ikemen_go.R;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Controles de toque do Ikemen GO (estilo "contorno": botoes transparentes por dentro).
+ * Controles de toque do Ikemen GO (estilo "contorno": botoes transparentes por dentro, com desenhos no lugar das letras).
  *
  * Modos (informados pelo engine via SDLActivity.onUnhandledMessage):
  *  - MENU: so aparece o botao "Voltar"; o resto da tela e repassado ao jogo como toque
@@ -55,6 +58,18 @@ public class ControllerOverlay extends RelativeLayout {
     private static final int TYPE_ANALOG = 1;
 
     private static final String PREFS_NAME = "ikemen_touch_layout_v3";
+
+    // Desenhos (res/drawable-nodpi). Cada PNG de botao e 256x256 com o anel de 248 px de diametro;
+    // a base do analogico e 512x512 com anel de 504 px; a alavanca (anel do meio + bolinha) e 256x256.
+    private static final float BTN_CANVAS = 256f / 248f;
+    private static final float BASE_CANVAS = 512f / 504f;
+    private static final float STICK_RATIO = 0.597f;           // diametro da alavanca / diametro da base
+    private static final float STICK_CANVAS = 256f / 248f;
+    private static final float THUMB_TRAVEL = 0.5f;            // curso da alavanca (fracao do raio): passa um pouco do arco
+
+    // Quanto os botoes de ataque (A B C Y + X Z) ficam afastados do canto da tela, em dp.
+    // Positivo = para dentro da tela (esquerda), longe do canto; negativo = para o canto.
+    private static final float ATTACK_SHIFT_DP = 24f;
 
     private static class Ctl {
         final String key;
@@ -110,11 +125,14 @@ public class ControllerOverlay extends RelativeLayout {
     private int backPointer = -1;
     private boolean panelGesture = false;
 
-    private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path arrowPath = new Path();
+    private final Paint bmpPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    private final RectF dst = new RectF();
+
+    // Desenhos dos botoes
+    private final Map<Integer, Bitmap> codeBitmaps = new HashMap<>(); // tecla -> desenho
+    private Bitmap analogBase, analogStick, backBitmap;
 
     // Painel do editor
     private LinearLayout panel;
@@ -191,15 +209,12 @@ public class ControllerOverlay extends RelativeLayout {
         ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 48f, 99));
         ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
         ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
-        ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 40f, 108));
+        ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 48f, 108));
         menuCtl = new Ctl("menu", "Botao Menu", TYPE_BUTTON, 40f, 109);
         ctls.add(menuCtl);
 
-        ringPaint.setStyle(Paint.Style.STROKE);
-        ringPaint.setStrokeWidth(2.5f * density);
         fillPaint.setStyle(Paint.Style.FILL);
-        textPaint.setTextAlign(Paint.Align.CENTER);
-        textPaint.setTypeface(Typeface.DEFAULT_BOLD);
+        loadBitmaps(context);
         dashPaint.setStyle(Paint.Style.STROKE);
         dashPaint.setStrokeWidth(2f * density);
         dashPaint.setColor(Color.rgb(255, 214, 102));
@@ -207,6 +222,26 @@ public class ControllerOverlay extends RelativeLayout {
 
         loadPrefs();
         buildPanel(context);
+    }
+
+    private Bitmap loadBmp(Context context, int resId) {
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inScaled = false;
+        return BitmapFactory.decodeResource(context.getResources(), resId, o);
+    }
+
+    private void loadBitmaps(Context context) {
+        codeBitmaps.put(96, loadBmp(context, R.drawable.touch_a));
+        codeBitmaps.put(97, loadBmp(context, R.drawable.touch_b));
+        codeBitmaps.put(4005, loadBmp(context, R.drawable.touch_c));
+        codeBitmaps.put(99, loadBmp(context, R.drawable.touch_x));
+        codeBitmaps.put(100, loadBmp(context, R.drawable.touch_y));
+        codeBitmaps.put(103, loadBmp(context, R.drawable.touch_z));
+        codeBitmaps.put(108, loadBmp(context, R.drawable.touch_start));
+        codeBitmaps.put(109, loadBmp(context, R.drawable.touch_menu));
+        analogBase = loadBmp(context, R.drawable.touch_analog_base);
+        analogStick = loadBmp(context, R.drawable.touch_analog_stick);
+        backBitmap = loadBmp(context, R.drawable.touch_back);
     }
 
     // ------------------------------------------------------------------
@@ -221,7 +256,7 @@ public class ControllerOverlay extends RelativeLayout {
         //     B     Y
         //        A
         float r = 52f * d;
-        float cx = W - marginR - r - bs / 2f;
+        float cx = W - marginR - r - bs / 2f - ATTACK_SHIFT_DP * d;
         float cy = H - marginB - r - bs / 2f;
         // X e Z ficam separados da roda, subindo pela lateral direita (X acima do Y, Z acima do X)
         float xX = cx + r + 6f * d;
@@ -240,7 +275,7 @@ public class ControllerOverlay extends RelativeLayout {
             // Menu: cantinho superior esquerdo, fora do caminho
             case "menu":   return new float[]{16f * d + 20f * d, 14f * d + 20f * d};
             // Start: embaixo, ao lado esquerdo da roda
-            case "start":  return new float[]{cx - r - bs / 2f - 50f * d, H - marginB - 20f * d};
+            case "start":  return new float[]{cx - r - bs / 2f - 50f * d, H - marginB - 24f * d};
             default:       return new float[]{W / 2f, H / 2f};
         }
     }
@@ -326,86 +361,44 @@ public class ControllerOverlay extends RelativeLayout {
         }
     }
 
-    private int gray(float alpha) {
-        return Color.argb((int) (255 * Math.max(0.1f, Math.min(1f, alpha))), 215, 215, 215);
+    private void drawBmp(Canvas canvas, Bitmap bmp, float cx, float cy, float size, float alpha) {
+        if (bmp == null) return;
+        dst.set(cx - size / 2f, cy - size / 2f, cx + size / 2f, cy + size / 2f);
+        bmpPaint.setAlpha((int) (255 * Math.max(0.1f, Math.min(1f, alpha))));
+        canvas.drawBitmap(bmp, null, dst, bmpPaint);
     }
 
     private void drawCtl(Canvas canvas, Ctl c, boolean editing) {
         float r = c.radius(density);
         float a = c.visible ? c.alpha : 0.25f; // oculto: so aparece "fantasma" no editor
-        ringPaint.setColor(gray(a));
         if (c.type == TYPE_ANALOG) {
-            // anel externo (transparente por dentro)
-            canvas.drawCircle(c.cx, c.cy, r, ringPaint);
-            // setinhas
-            fillPaint.setColor(gray(a * 0.8f));
-            float t = r * 0.86f, s = r * 0.09f;
-            drawArrow(canvas, c.cx, c.cy - t, 0, -1, s);
-            drawArrow(canvas, c.cx, c.cy + t, 0, 1, s);
-            drawArrow(canvas, c.cx - t, c.cy, -1, 0, s);
-            drawArrow(canvas, c.cx + t, c.cy, 1, 0, s);
-            // "pino" tambem so com contorno
-            float tr = r * 0.38f;
+            // base fixa (anel externo + setas) e alavanca (anel do meio + bolinha) que segue o dedo
+            drawBmp(canvas, analogBase, c.cx, c.cy, 2f * r * BASE_CANVAS, a);
             float px = c.cx + (analogPointer != -1 && !editing ? thumbDx : 0f);
             float py = c.cy + (analogPointer != -1 && !editing ? thumbDy : 0f);
-            ringPaint.setStrokeWidth(3f * density);
-            canvas.drawCircle(px, py, tr, ringPaint);
-            ringPaint.setStrokeWidth(2.5f * density);
-            textPaint.setColor(gray(a));
-            textPaint.setTextSize(tr * 0.9f);
-            canvas.drawText("L", px, py + tr * 0.32f, textPaint);
+            drawBmp(canvas, analogStick, px, py, 2f * r * STICK_RATIO * STICK_CANVAS, a);
         } else {
             if (c.pressed && !editing) {
                 fillPaint.setColor(Color.argb((int) (90 * a), 255, 255, 255));
                 canvas.drawCircle(c.cx, c.cy, r, fillPaint);
             }
-            canvas.drawCircle(c.cx, c.cy, r, ringPaint);
-            textPaint.setColor(gray(a));
-            String label = labelFor(c.code);
-            textPaint.setTextSize(r * (label.length() > 2 ? 0.42f : 0.8f));
-            canvas.drawText(label, c.cx, c.cy + textPaint.getTextSize() * 0.35f, textPaint);
+            drawBmp(canvas, codeBitmaps.get(c.code), c.cx, c.cy, 2f * r * BTN_CANVAS, a);
         }
     }
 
-    private void drawArrow(Canvas canvas, float x, float y, int dx, int dy, float s) {
-        arrowPath.reset();
-        if (dx == 0) {
-            arrowPath.moveTo(x, y + dy * s);
-            arrowPath.lineTo(x - s, y - dy * s);
-            arrowPath.lineTo(x + s, y - dy * s);
-        } else {
-            arrowPath.moveTo(x + dx * s, y);
-            arrowPath.lineTo(x - dx * s, y - s);
-            arrowPath.lineTo(x - dx * s, y + s);
-        }
-        arrowPath.close();
-        canvas.drawPath(arrowPath, fillPaint);
-    }
-
-    private String labelFor(int code) {
-        for (int i = 0; i < CODES.length; i++) {
-            if (CODES[i] == code) return CODE_NAMES[i];
-        }
-        return "?";
-    }
-
-    // Botao "Voltar" mostrado nos menus: cancelar / voltar
+    // Botao "Voltar" mostrado nos menus: cancelar / voltar (circulo com a seta)
     private RectF backRect() {
         float d = density;
-        return new RectF(14f * d, 12f * d, 14f * d + 96f * d, 12f * d + 40f * d);
+        return new RectF(14f * d, 12f * d, 14f * d + 46f * d, 12f * d + 46f * d);
     }
 
     private void drawBackButton(Canvas canvas) {
         RectF r = backRect();
         if (backPointer != -1) {
             fillPaint.setColor(Color.argb(70, 255, 255, 255));
-            canvas.drawRoundRect(r, 20f * density, 20f * density, fillPaint);
+            canvas.drawCircle(r.centerX(), r.centerY(), r.width() / 2f, fillPaint);
         }
-        ringPaint.setColor(gray(0.8f));
-        canvas.drawRoundRect(r, 20f * density, 20f * density, ringPaint);
-        textPaint.setColor(gray(0.9f));
-        textPaint.setTextSize(15f * density);
-        canvas.drawText("\u25C0  VOLTAR", r.centerX(), r.centerY() + 5.5f * density, textPaint);
+        drawBmp(canvas, backBitmap, r.centerX(), r.centerY(), r.width() * BTN_CANVAS, 0.9f);
     }
 
     // ------------------------------------------------------------------
@@ -833,7 +826,7 @@ public class ControllerOverlay extends RelativeLayout {
         float dx = x - analogCtl.cx;
         float dy = y - analogCtl.cy;
         float dist = (float) Math.sqrt(dx * dx + dy * dy);
-        float limit = r * 0.55f;
+        float limit = r * THUMB_TRAVEL;
         if (dist > limit && dist > 0f) {
             thumbDx = dx / dist * limit;
             thumbDy = dy / dist * limit;

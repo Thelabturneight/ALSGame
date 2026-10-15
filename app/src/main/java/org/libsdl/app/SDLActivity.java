@@ -1089,6 +1089,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     mControllerOverlay.openEditor();
                 }
                 return true;
+            case 4: // 0 = not a Tag match, 1 = Tag match (shows the D/W swap buttons)
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setTagMode(value == 1);
+                }
+                return true;
             case 3: // 0 = hide Back button (root menu), 1 = show
                 if (mControllerOverlay != null) {
                     mControllerOverlay.setBackVisible(value == 1);

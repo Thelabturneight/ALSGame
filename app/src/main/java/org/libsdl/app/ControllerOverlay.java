@@ -50,8 +50,9 @@ public class ControllerOverlay extends RelativeLayout {
     public static final int MODE_FIGHT = 1;
 
     // Teclas do gamepad virtual -> teclas do Ikemen (config padrao Joystick_P1)
-    private static final int[] CODES = {96, 97, 4005, 99, 100, 103, 108, 109};
-    private static final String[] CODE_NAMES = {"A", "B", "C", "X", "Y", "Z", "START", "MENU"};
+    // 102 = LB (tecla "d" do Ikemen), 4004 = LT (tecla "w" do Ikemen): troca de personagem no modo Tag
+    private static final int[] CODES = {96, 97, 4005, 99, 100, 103, 108, 109, 102, 4004};
+    private static final String[] CODE_NAMES = {"A", "B", "C", "X", "Y", "Z", "START", "MENU", "D", "W"};
 
     private static final int BACK_CODE = 109; // tecla "menu" do Ikemen: cancelar/voltar nos menus
     private static final int TYPE_BUTTON = 0;
@@ -92,6 +93,7 @@ public class ControllerOverlay extends RelativeLayout {
         float fx = -1f, fy = -1f; // centro, em fracao da tela; <0 = padrao
         float cx, cy;             // centro atual em px
         boolean pressed;
+        boolean tagOnly;          // so aparece na luta quando o modo e Tag (sempre aparece no editor)
 
         Ctl(String key, String title, int type, float baseDp, int defCode) {
             this.key = key;
@@ -122,6 +124,7 @@ public class ControllerOverlay extends RelativeLayout {
     private float thumbDx = 0f, thumbDy = 0f;
 
     private int mode = MODE_MENU;
+    private boolean tagMode = false; // partida em modo Tag: mostra os botoes D e W
     private boolean backVisible = false; // starts hidden (boot/loading/title); the engine shows it inside submenus
     private boolean editMode = false;
     private Ctl selected = null;
@@ -217,6 +220,13 @@ public class ControllerOverlay extends RelativeLayout {
         ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
         ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
         ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 48f, 108));
+        // Troca de personagem (Tag): pequenos, canto superior direito
+        Ctl tagD = new Ctl("d", "Botao D (Tag)", TYPE_BUTTON, 32f, 102);
+        Ctl tagW = new Ctl("w", "Botao W (Tag)", TYPE_BUTTON, 32f, 4004);
+        tagD.tagOnly = true;
+        tagW.tagOnly = true;
+        ctls.add(tagD);
+        ctls.add(tagW);
         menuCtl = new Ctl("menu", "Botao Menu", TYPE_BUTTON, 40f, 109);
         ctls.add(menuCtl);
 
@@ -244,6 +254,8 @@ public class ControllerOverlay extends RelativeLayout {
         codeBitmaps.put(99, loadBmp(context, R.drawable.touch_x));
         codeBitmaps.put(100, loadBmp(context, R.drawable.touch_y));
         codeBitmaps.put(103, loadBmp(context, R.drawable.touch_z));
+        codeBitmaps.put(102, loadBmp(context, R.drawable.touch_d));
+        codeBitmaps.put(4004, loadBmp(context, R.drawable.touch_w));
         codeBitmaps.put(108, loadBmp(context, R.drawable.touch_start));
         codeBitmaps.put(109, loadBmp(context, R.drawable.touch_menu));
         analogBase = loadBmp(context, R.drawable.touch_analog_base);
@@ -280,6 +292,9 @@ public class ControllerOverlay extends RelativeLayout {
             case "a":      return new float[]{cx, cy + r};
             case "x":      return new float[]{xX, xY};
             case "z":      return new float[]{zX, zY};
+            // Troca de personagem (Tag): fileira no canto superior direito, W no canto e D ao lado
+            case "w":      return new float[]{W - 14f * d - 16f * d, 12f * d + 16f * d};
+            case "d":      return new float[]{W - 14f * d - 16f * d - 46f * d, 12f * d + 16f * d};
             // Menu: cantinho superior esquerdo, fora do caminho
             case "menu":   return new float[]{16f * d + 20f * d, 14f * d + 20f * d};
             // Start: embaixo, ao lado esquerdo da roda
@@ -362,7 +377,7 @@ public class ControllerOverlay extends RelativeLayout {
             }
         } else if (mode == MODE_FIGHT) {
             for (Ctl c : ctls) {
-                if (c.visible) drawCtl(canvas, c, false);
+                if (c.visible && (!c.tagOnly || tagMode)) drawCtl(canvas, c, false);
             }
         } else if (backVisible) {
             drawBackButton(canvas);
@@ -419,6 +434,20 @@ public class ControllerOverlay extends RelativeLayout {
         releaseAll();
         mode = newMode;
         invalidate();
+    }
+
+    // Modo Tag (vindo do engine): mostra/esconde os botoes de troca de personagem (D e W)
+    public void setTagMode(boolean v) {
+        if (tagMode == v) return;
+        tagMode = v;
+        if (!v) {
+            // solta qualquer botao de Tag que esteja pressionado
+            for (Integer id : new ArrayList<>(pointerCtl.keySet())) {
+                Ctl c = pointerCtl.get(id);
+                if (c != null && c.tagOnly) releasePointer(id);
+            }
+        }
+        postInvalidate();
     }
 
     public void setBackVisible(boolean v) {
@@ -801,6 +830,7 @@ public class ControllerOverlay extends RelativeLayout {
         for (int i = ctls.size() - 1; i >= 0; i--) {
             Ctl c = ctls.get(i);
             if (!c.visible) continue;
+            if (c.tagOnly && !tagMode) continue; // botoes de Tag so existem no modo Tag
             if (isInsideCtl(c, x, y)) return c;
         }
         return null;

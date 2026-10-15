@@ -54,7 +54,7 @@ public class ControllerOverlay extends RelativeLayout {
     private static final int TYPE_BUTTON = 0;
     private static final int TYPE_ANALOG = 1;
 
-    private static final String PREFS_NAME = "ikemen_touch_layout_v2";
+    private static final String PREFS_NAME = "ikemen_touch_layout_v3";
 
     private static class Ctl {
         final String key;
@@ -188,9 +188,9 @@ public class ControllerOverlay extends RelativeLayout {
         ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, 64f, 96));
         ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, 64f, 97));
         ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, 64f, 4005));
-        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 64f, 99));
+        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 48f, 99));
         ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
-        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 64f, 103));
+        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
         ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 40f, 108));
         menuCtl = new Ctl("menu", "Botao Menu", TYPE_BUTTON, 40f, 109);
         ctls.add(menuCtl);
@@ -215,22 +215,32 @@ public class ControllerOverlay extends RelativeLayout {
     private float[] defaultCenter(Ctl c, int W, int H) {
         float d = density;
         float bs = 64f * d;
-        float step = bs + 12f * d;
-        float c2x = W - 34f * d - bs / 2f;
-        float c1x = c2x - step;
-        float c0x = c1x - step;
-        float r1y = H - 30f * d - bs / 2f;
-        float r0y = r1y - step;
+        float marginR = 30f * d, marginB = 26f * d;
+        // "Roda" de 4 botoes no canto inferior direito, em losango:
+        //        C
+        //     B     Y
+        //        A
+        float r = 52f * d;
+        float cx = W - marginR - r - bs / 2f;
+        float cy = H - marginB - r - bs / 2f;
+        // X e Z ficam separados da roda, subindo pela lateral direita (X acima do Y, Z acima do X)
+        float xX = cx + r + 6f * d;
+        float xY = cy - r - 52f * d;
+        float zX = xX + 12f * d;
+        float zY = Math.max(xY - 64f * d, 6f * d + 24f * d);
         switch (c.key) {
-            case "analog": return new float[]{40f * d + 75f * d, H - 30f * d - 75f * d};
-            case "a":      return new float[]{c0x, r1y};
-            case "b":      return new float[]{c1x, r1y};
-            case "c":      return new float[]{c2x, r1y};
-            case "x":      return new float[]{c0x, r0y};
-            case "y":      return new float[]{c1x, r0y};
-            case "z":      return new float[]{c2x, r0y};
-            case "menu":   return new float[]{W - 34f * d - 52f * d, 12f * d + 20f * d};
-            case "start":  return new float[]{W - 34f * d, 12f * d + 20f * d};
+            // Analogico no canto inferior esquerdo
+            case "analog": return new float[]{34f * d + 75f * d, H - marginB - 75f * d};
+            case "c":      return new float[]{cx, cy - r};
+            case "b":      return new float[]{cx - r, cy};
+            case "y":      return new float[]{cx + r, cy};
+            case "a":      return new float[]{cx, cy + r};
+            case "x":      return new float[]{xX, xY};
+            case "z":      return new float[]{zX, zY};
+            // Menu: cantinho superior esquerdo, fora do caminho
+            case "menu":   return new float[]{16f * d + 20f * d, 14f * d + 20f * d};
+            // Start: embaixo, ao lado esquerdo da roda
+            case "start":  return new float[]{cx - r - bs / 2f - 50f * d, H - marginB - 20f * d};
             default:       return new float[]{W / 2f, H / 2f};
         }
     }

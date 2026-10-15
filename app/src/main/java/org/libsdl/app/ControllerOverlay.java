@@ -100,7 +100,7 @@ public class ControllerOverlay extends RelativeLayout {
     private float thumbDx = 0f, thumbDy = 0f;
 
     private int mode = MODE_MENU;
-    private boolean backVisible = true; // hidden on the root title menu (set by the engine)
+    private boolean backVisible = false; // starts hidden (boot/loading/title); the engine shows it inside submenus
     private boolean editMode = false;
     private Ctl selected = null;
     private Ctl dragging = null;
@@ -125,6 +125,7 @@ public class ControllerOverlay extends RelativeLayout {
     private CheckBox visibleBox;
     private LinearLayout keyRow;
     private boolean updatingPanel = false;
+    private boolean userPickedKey = false; // only a real tap on the spinner may change a control's key
 
     // ------------------------------------------------------------------
     // Joystick fisico (inalterado)
@@ -553,10 +554,20 @@ public class ControllerOverlay extends RelativeLayout {
         ArrayAdapter<String> ad = new ArrayAdapter<>(context, android.R.layout.simple_spinner_item, CODE_NAMES);
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         keySpinner.setAdapter(ad);
+        keySpinner.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent e) {
+                if (e.getActionMasked() == MotionEvent.ACTION_DOWN) userPickedKey = true;
+                return false;
+            }
+        });
         keySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                if (updatingPanel || selected == null || selected.type != TYPE_BUTTON) return;
+                // Spinner callbacks are deferred, so programmatic setSelection() would otherwise
+                // overwrite the key of whichever control is selected at that moment.
+                if (updatingPanel || !userPickedKey || selected == null || selected.type != TYPE_BUTTON) return;
+                userPickedKey = false;
                 selected.code = CODES[pos];
                 savePrefs();
                 invalidate();
@@ -641,6 +652,7 @@ public class ControllerOverlay extends RelativeLayout {
 
     private void updatePanel() {
         updatingPanel = true;
+        userPickedKey = false;
         if (selected == null) {
             panelTitle.setText("Toque num controle para editar");
             sizeBar.setEnabled(false);

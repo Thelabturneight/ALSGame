@@ -65,7 +65,14 @@ public class ControllerOverlay extends RelativeLayout {
     private static final float BASE_CANVAS = 512f / 504f;
     private static final float STICK_RATIO = 0.597f;           // diametro da alavanca / diametro da base
     private static final float STICK_CANVAS = 256f / 248f;
-    private static final float THUMB_TRAVEL = 0.5f;            // curso da alavanca (fracao do raio): passa um pouco do arco
+    // Distancia da borda esquerda da tela ate a borda da base do analogico (padrao), em dp
+    private static final float ANALOG_LEFT_DP = 84f;
+
+    // No PNG da alavanca (256 px): anel interno com raio externo ~124 px (fixo) e bolinha com raio ~77 px (move).
+    // A bolinha sai do anel interno e anda ate a borda dela encostar por FORA do anel: (124 + 77) / 256 do tamanho da alavanca.
+    private static final float RING_OUTER_PX = 124f;
+    private static final float DOT_RADIUS_PX = 77f;
+    private static final float THUMB_TRAVEL_IN_STICK = (RING_OUTER_PX + DOT_RADIUS_PX) / 256f;
 
     // Quanto os botoes de ataque (A B C Y + X Z) ficam afastados do canto da tela, em dp.
     // Positivo = para dentro da tela (esquerda), longe do canto; negativo = para o canto.
@@ -132,7 +139,7 @@ public class ControllerOverlay extends RelativeLayout {
 
     // Desenhos dos botoes
     private final Map<Integer, Bitmap> codeBitmaps = new HashMap<>(); // tecla -> desenho
-    private Bitmap analogBase, analogStick, backBitmap;
+    private Bitmap analogBase, analogRing, analogDot, backBitmap;
 
     // Painel do editor
     private LinearLayout panel;
@@ -240,7 +247,8 @@ public class ControllerOverlay extends RelativeLayout {
         codeBitmaps.put(108, loadBmp(context, R.drawable.touch_start));
         codeBitmaps.put(109, loadBmp(context, R.drawable.touch_menu));
         analogBase = loadBmp(context, R.drawable.touch_analog_base);
-        analogStick = loadBmp(context, R.drawable.touch_analog_stick);
+        analogRing = loadBmp(context, R.drawable.touch_analog_ring);
+        analogDot = loadBmp(context, R.drawable.touch_analog_dot);
         backBitmap = loadBmp(context, R.drawable.touch_back);
     }
 
@@ -264,8 +272,8 @@ public class ControllerOverlay extends RelativeLayout {
         float zX = xX + 12f * d;
         float zY = Math.max(xY - 64f * d, 6f * d + 24f * d);
         switch (c.key) {
-            // Analogico no canto inferior esquerdo
-            case "analog": return new float[]{34f * d + 75f * d, H - marginB - 75f * d};
+            // Analogico na esquerda, afastado da borda para o dedo nao sair da tela ao puxar pra esquerda
+            case "analog": return new float[]{ANALOG_LEFT_DP * d + 75f * d, H - marginB - 75f * d};
             case "c":      return new float[]{cx, cy - r};
             case "b":      return new float[]{cx - r, cy};
             case "y":      return new float[]{cx + r, cy};
@@ -372,11 +380,13 @@ public class ControllerOverlay extends RelativeLayout {
         float r = c.radius(density);
         float a = c.visible ? c.alpha : 0.25f; // oculto: so aparece "fantasma" no editor
         if (c.type == TYPE_ANALOG) {
-            // base fixa (anel externo + setas) e alavanca (anel do meio + bolinha) que segue o dedo
+            // fixos: base (anel externo + setas) e anel interno; so a bolinha segue o dedo
+            float stickSize = 2f * r * STICK_RATIO * STICK_CANVAS;
             drawBmp(canvas, analogBase, c.cx, c.cy, 2f * r * BASE_CANVAS, a);
+            drawBmp(canvas, analogRing, c.cx, c.cy, stickSize, a);
             float px = c.cx + (analogPointer != -1 && !editing ? thumbDx : 0f);
             float py = c.cy + (analogPointer != -1 && !editing ? thumbDy : 0f);
-            drawBmp(canvas, analogStick, px, py, 2f * r * STICK_RATIO * STICK_CANVAS, a);
+            drawBmp(canvas, analogDot, px, py, stickSize, a);
         } else {
             if (c.pressed && !editing) {
                 fillPaint.setColor(Color.argb((int) (90 * a), 255, 255, 255));
@@ -771,6 +781,13 @@ public class ControllerOverlay extends RelativeLayout {
                     updateAnalog(event.getX(i), event.getY(i));
                 }
             }
+            // Botao: se o dedo sai de cima dele, solta a tecla (so volta a apertar num novo toque)
+            for (Integer id : new ArrayList<>(pointerCtl.keySet())) {
+                int pi = event.findPointerIndex(id);
+                Ctl c = pointerCtl.get(id);
+                if (pi < 0 || c == null) continue;
+                if (!isInsideCtl(c, event.getX(pi), event.getY(pi))) releasePointer(id);
+            }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
             releasePointer(pId);
         } else if (action == MotionEvent.ACTION_CANCEL) {
@@ -781,15 +798,20 @@ public class ControllerOverlay extends RelativeLayout {
     }
 
     private Ctl hitTest(float x, float y) {
-        float slop = 8f * density; // tolerancia
         for (int i = ctls.size() - 1; i >= 0; i--) {
             Ctl c = ctls.get(i);
             if (!c.visible) continue;
-            float r = c.radius(density) + (c.type == TYPE_ANALOG ? c.radius(density) * 0.3f : slop);
-            float dx = x - c.cx, dy = y - c.cy;
-            if (dx * dx + dy * dy <= r * r) return c;
+            if (isInsideCtl(c, x, y)) return c;
         }
         return null;
+    }
+
+    // Area de toque de um controle (mesma regra para apertar e para continuar apertando)
+    private boolean isInsideCtl(Ctl c, float x, float y) {
+        float slop = 8f * density; // tolerancia
+        float r = c.radius(density) + (c.type == TYPE_ANALOG ? c.radius(density) * 0.3f : slop);
+        float dx = x - c.cx, dy = y - c.cy;
+        return dx * dx + dy * dy <= r * r;
     }
 
     private void releasePointer(int pId) {
@@ -822,11 +844,20 @@ public class ControllerOverlay extends RelativeLayout {
 
     // Analogico: o visual segue o dedo; para o jogo vira direcao digital de 8 sentidos (hat)
     private void updateAnalog(float x, float y) {
+        // Area do analogico: so a metade da tela onde ele esta. Passou do meio da tela, para de responder.
+        float mid = getWidth() / 2f;
+        boolean outside = (analogCtl.cx < mid) ? (x > mid) : (x < mid);
+        if (outside) {
+            thumbDx = 0f;
+            thumbDy = 0f;
+            setHat(0, 0);
+            return;
+        }
         float r = analogCtl.radius(density);
         float dx = x - analogCtl.cx;
         float dy = y - analogCtl.cy;
         float dist = (float) Math.sqrt(dx * dx + dy * dy);
-        float limit = r * THUMB_TRAVEL;
+        float limit = 2f * r * STICK_RATIO * STICK_CANVAS * THUMB_TRAVEL_IN_STICK;
         if (dist > limit && dist > 0f) {
             thumbDx = dx / dist * limit;
             thumbDy = dy / dist * limit;

@@ -100,6 +100,7 @@ public class ControllerOverlay extends RelativeLayout {
     private float thumbDx = 0f, thumbDy = 0f;
 
     private int mode = MODE_MENU;
+    private boolean backVisible = true; // hidden on the root title menu (set by the engine)
     private boolean editMode = false;
     private Ctl selected = null;
     private Ctl dragging = null;
@@ -309,7 +310,7 @@ public class ControllerOverlay extends RelativeLayout {
             for (Ctl c : ctls) {
                 if (c.visible) drawCtl(canvas, c, false);
             }
-        } else {
+        } else if (backVisible) {
             drawBackButton(canvas);
         }
     }
@@ -404,6 +405,16 @@ public class ControllerOverlay extends RelativeLayout {
         releaseAll();
         mode = newMode;
         invalidate();
+    }
+
+    public void setBackVisible(boolean v) {
+        if (backVisible == v) return;
+        backVisible = v;
+        if (!v && backPointer != -1) {
+            handleCode(BACK_CODE, false);
+            backPointer = -1;
+        }
+        postInvalidate();
     }
 
     public void openEditor() {
@@ -697,7 +708,7 @@ public class ControllerOverlay extends RelativeLayout {
         int idx = event.getActionIndex();
         if (action == MotionEvent.ACTION_DOWN) {
             menuForwarding = false;
-            if (backRect().contains(event.getX(idx), event.getY(idx))) {
+            if (backVisible && backRect().contains(event.getX(idx), event.getY(idx))) {
                 backPointer = event.getPointerId(idx);
                 handleCode(BACK_CODE, true);
                 invalidate();

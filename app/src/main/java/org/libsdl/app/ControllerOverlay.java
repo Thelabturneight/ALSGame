@@ -8,141 +8,122 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
+import android.graphics.Typeface;
+import android.view.Gravity;
 import android.view.InputDevice;
-import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewConfiguration;
-import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
-import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
-import android.widget.Toast;
-
-import org.ikemen_engine.ikemen_go.R;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
- * Overlay de controles touch do Ikemen GO.
+ * Controles de toque do Ikemen GO (estilo "contorno": botoes transparentes por dentro).
  *
- * Alem de emular um gamepad (Xbox 360) por toque, agora e configuravel dentro do jogo:
- *  - segure a engrenagem (canto superior direito) por ~0,6 s para abrir as configuracoes;
- *  - opacidade, tamanho e tolerancia de toque globais;
- *  - modo de edicao: arraste cada controle, toque nele para ajustar tamanho, opacidade,
- *    visibilidade, icone e qual tecla do gamepad ele envia (a, b, c, x, y, z, d, w, start, menu);
- *  - tudo e salvo em SharedPreferences.
+ * Modos (informados pelo engine via SDLActivity.onUnhandledMessage):
+ *  - MENU: so aparece o botao "Voltar"; o resto da tela e repassado ao jogo como toque
+ *          (o engine converte em selecao/confirmacao nos menus e na selecao de personagem).
+ *  - LUTA: analogico + botoes A B C X Y Z, Start e Menu.
+ *  - EDITOR: aberto por "Opcoes > Controles de Toque". Os controles ficam SEMPRE visiveis
+ *          (nada de auto-ocultar). Cada controle tem sua propria configuracao
+ *          (posicao, tamanho, opacidade, tecla e visibilidade).
  */
 public class ControllerOverlay extends RelativeLayout {
-    private int virtualDeviceId;
-    private int hatX, hatY = 0;
-    private final Map<Integer, Set<Integer>> pointerStates = new HashMap<>(); // PointerID -> indices dos controles
-    private final Map<Integer, Integer> codeCounts = new HashMap<>();         // codigo -> quantos controles o seguram
-    private boolean isInitialized = false;
+    public static final int MODE_MENU = 0;
+    public static final int MODE_FIGHT = 1;
 
-    // ------------------------------------------------------------------
-    // Modelo dos controles
-    // ------------------------------------------------------------------
+    // Teclas do gamepad virtual -> teclas do Ikemen (config padrao Joystick_P1)
+    private static final int[] CODES = {96, 97, 4005, 99, 100, 103, 108, 109};
+    private static final String[] CODE_NAMES = {"A", "B", "C", "X", "Y", "Z", "START", "MENU"};
+
+    private static final int BACK_CODE = 109; // tecla "menu" do Ikemen: cancelar/voltar nos menus
     private static final int TYPE_BUTTON = 0;
-    private static final int TYPE_DPAD = 1;
-    private static final int TYPE_ANALOG = 2;
+    private static final int TYPE_ANALOG = 1;
 
-    // Codigos do gamepad virtual -> tecla correspondente no Ikemen (config padrao Joystick_P1)
-    private static final int[] CODES = {96, 97, 4005, 99, 100, 103, 102, 4004, 108, 109};
-    private static final String[] CODE_LABELS = {
-            "a  (A)", "b  (B)", "c  (RT)", "x  (X)", "y  (Y)",
-            "z  (RB)", "d  (LB)", "w  (LT)", "start", "menu / pausa (BACK)"};
-
-    private static final int[] ICON_RES = {
-            R.drawable.btn_punch, R.drawable.btn_palm, R.drawable.btn_ki, R.drawable.btn_run,
-            R.drawable.btn_burst, R.drawable.btn_aura, R.drawable.btn_menu};
-    private static final int[] ICON_LABEL_RES = {
-            R.string.touch_icon_punch, R.string.touch_icon_palm, R.string.touch_icon_ki,
-            R.string.touch_icon_run, R.string.touch_icon_burst, R.string.touch_icon_aura,
-            R.string.touch_icon_menu};
-
-    private static final float DEF_ALPHA = 0.75f;
-    private static final float DEF_SCALE = 1.0f;
-    private static final int DEF_TOLERANCE_DP = 8;
-    private static final String PREFS_NAME = "ikemen_touch_layout_v1";
+    private static final String PREFS_NAME = "ikemen_touch_layout_v2";
 
     private static class Ctl {
         final String key;
+        final String title;
         final int type;
-        final int viewId;
-        final float baseDp;
+        final float baseDp;   // diametro base em dp
         final int defCode;
-        final int defIcon;
-        final boolean defVisible;
 
-        boolean visible;
+        boolean visible = true;
         float scale = 1f;
-        float alpha = 1f;
+        float alpha = 0.8f;
         int code;
-        int icon;
-        float fx = -1f, fy = -1f; // centro em fracao da tela; <0 = posicao padrao
-        int shownIcon = -1;
-        View view;
+        float fx = -1f, fy = -1f; // centro, em fracao da tela; <0 = padrao
+        float cx, cy;             // centro atual em px
+        boolean pressed;
 
-        Ctl(String key, int type, int viewId, float baseDp, int defCode, int defIcon, boolean defVisible) {
+        Ctl(String key, String title, int type, float baseDp, int defCode) {
             this.key = key;
+            this.title = title;
             this.type = type;
-            this.viewId = viewId;
             this.baseDp = baseDp;
             this.defCode = defCode;
-            this.defIcon = defIcon;
-            this.defVisible = defVisible;
-            this.visible = defVisible;
             this.code = defCode;
-            this.icon = defIcon;
+        }
+
+        float radius(float density) {
+            return baseDp * density * scale / 2f;
         }
     }
 
-    private final List<Ctl> ctls = new ArrayList<>();
-    private Ctl dpadCtl;
-    private Ctl analogCtl;
-
-    private float globalAlpha = DEF_ALPHA;
-    private float globalScale = DEF_SCALE;
-    private int toleranceDp = DEF_TOLERANCE_DP;
-
     private final float density;
     private final SharedPreferences sp;
+    private final List<Ctl> ctls = new ArrayList<>();
+    private final Ctl analogCtl;
+    private final Ctl menuCtl;     // usado tambem como "Voltar" nos menus
+    private final Map<Integer, Ctl> pointerCtl = new HashMap<>(); // dedo -> botao
+    private final Map<Integer, Integer> codeCounts = new HashMap<>();
 
-    // engrenagem e barra do modo de edicao
-    private View gearView;
-    private int gearPointerId = -1;
-    private final Runnable gearRunnable = new Runnable() {
-        @Override
-        public void run() {
-            gearPointerId = -1;
-            showMainDialog();
-        }
-    };
-    private LinearLayout editBar;
-    private Button btnEditDone;
-    private Button btnEditOptions;
+    private int virtualDeviceId;
+    private boolean isInitialized = false;
+    private int hatX = 0, hatY = 0;
+    private int analogPointer = -1;
+    private float thumbDx = 0f, thumbDy = 0f;
 
+    private int mode = MODE_MENU;
     private boolean editMode = false;
-    private Ctl dragCtl;
-    private float dragDX, dragDY, downX, downY;
-    private boolean dragMoved;
-    private final Paint outlinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Ctl selected = null;
+    private Ctl dragging = null;
+    private float dragOffX, dragOffY;
+    private int dragPointer = -1;
+    private boolean menuForwarding = false;
+    private int backPointer = -1;
+    private boolean panelGesture = false;
+
+    private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint dashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path arrowPath = new Path();
+
+    // Painel do editor
+    private LinearLayout panel;
+    private TextView panelTitle;
+    private SeekBar sizeBar, alphaBar;
+    private TextView sizeLabel, alphaLabel;
+    private Spinner keySpinner;
+    private CheckBox visibleBox;
+    private LinearLayout keyRow;
+    private boolean updatingPanel = false;
 
     // ------------------------------------------------------------------
     // Joystick fisico (inalterado)
@@ -159,7 +140,6 @@ public class ControllerOverlay extends RelativeLayout {
         return count;
     }
 
-    // Helper to distinguish real controllers from "Ghost" sensors
     private boolean isRealGamepad(InputDevice device) {
         if (device == null) return false;
 
@@ -192,249 +172,493 @@ public class ControllerOverlay extends RelativeLayout {
     // ------------------------------------------------------------------
     public ControllerOverlay(Context context) {
         super(context);
-        this.setClickable(true);
-        this.setFocusable(true);
-        this.setEnabled(true);
-        this.setMotionEventSplittingEnabled(true);
+        setClickable(true);
+        setFocusable(true);
+        setEnabled(true);
+        setWillNotDraw(false);
+        setMotionEventSplittingEnabled(true);
 
         density = context.getResources().getDisplayMetrics().density;
         sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
-        // Inflate the buttons
-        LayoutInflater inflater = LayoutInflater.from(context);
-        View vc = inflater.inflate(R.layout.virtual_controller, this, true);
-        disableAllTouches(vc);
-
-        buildControlList();
-        loadPrefs();
-        buildEditBar();
-
-        gearView = findViewById(R.id.btn_gear);
-
-        outlinePaint.setStyle(Paint.Style.STROKE);
-        outlinePaint.setStrokeWidth(2f * density);
-        outlinePaint.setPathEffect(new DashPathEffect(new float[]{12f * density, 8f * density}, 0f));
-    }
-
-    private void buildControlList() {
-        dpadCtl = new Ctl("dpad", TYPE_DPAD, R.id.dpad_container, 160, 0, 0, true);
-        analogCtl = new Ctl("analog", TYPE_ANALOG, R.id.left_analog, 120, 0, 0, false);
-        ctls.add(dpadCtl);
+        analogCtl = new Ctl("analog", "Analogico", TYPE_ANALOG, 150f, 0);
         ctls.add(analogCtl);
-        //                       chave     tipo         view          dp  codigo icone visivel
-        ctls.add(new Ctl("a",     TYPE_BUTTON, R.id.btn_a,     68,  96,  0, true));
-        ctls.add(new Ctl("b",     TYPE_BUTTON, R.id.btn_b,     68,  97,  1, true));
-        ctls.add(new Ctl("c",     TYPE_BUTTON, R.id.btn_c,     68, 4005, 2, true));
-        ctls.add(new Ctl("y",     TYPE_BUTTON, R.id.btn_y,     68, 100,  3, true));
-        ctls.add(new Ctl("x",     TYPE_BUTTON, R.id.btn_x,     68,  99,  4, true));
-        ctls.add(new Ctl("start", TYPE_BUTTON, R.id.btn_start, 68, 108,  5, true));
-        ctls.add(new Ctl("z",     TYPE_BUTTON, R.id.btn_z,     68, 103,  0, false));
-        ctls.add(new Ctl("d",     TYPE_BUTTON, R.id.btn_d,     68, 102,  1, false));
-        ctls.add(new Ctl("w",     TYPE_BUTTON, R.id.btn_w,     68, 4004, 2, false));
-        ctls.add(new Ctl("menu",  TYPE_BUTTON, R.id.btn_back,  44, 109,  6, true));
-        for (Ctl c : ctls) {
-            c.view = findViewById(c.viewId);
-        }
-    }
+        ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, 64f, 96));
+        ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, 64f, 97));
+        ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, 64f, 4005));
+        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 64f, 99));
+        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
+        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 64f, 103));
+        ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 40f, 108));
+        menuCtl = new Ctl("menu", "Botao Menu", TYPE_BUTTON, 40f, 109);
+        ctls.add(menuCtl);
 
-    private void buildEditBar() {
-        Context ctx = getContext();
-        editBar = new LinearLayout(ctx);
-        editBar.setOrientation(LinearLayout.HORIZONTAL);
-        editBar.setBackgroundColor(0xCC000000);
-        int p = Math.round(6 * density);
-        editBar.setPadding(p, p, p, p);
+        ringPaint.setStyle(Paint.Style.STROKE);
+        ringPaint.setStrokeWidth(2.5f * density);
+        fillPaint.setStyle(Paint.Style.FILL);
+        textPaint.setTextAlign(Paint.Align.CENTER);
+        textPaint.setTypeface(Typeface.DEFAULT_BOLD);
+        dashPaint.setStyle(Paint.Style.STROKE);
+        dashPaint.setStrokeWidth(2f * density);
+        dashPaint.setColor(Color.rgb(255, 214, 102));
+        dashPaint.setPathEffect(new DashPathEffect(new float[]{10f * density, 7f * density}, 0f));
 
-        btnEditOptions = new Button(ctx);
-        btnEditOptions.setText(R.string.touch_options);
-        btnEditDone = new Button(ctx);
-        btnEditDone.setText(R.string.touch_done);
-        editBar.addView(btnEditOptions);
-        editBar.addView(btnEditDone);
-        disableAllTouches(editBar);
-        editBar.setVisibility(View.GONE);
-
-        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
-        addView(editBar, lp);
-    }
-
-    private void disableAllTouches(View v) {
-        v.setClickable(false);
-        v.setFocusable(false);
-        if (v instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) v;
-            for (int i = 0; i < vg.getChildCount(); i++) {
-                disableAllTouches(vg.getChildAt(i));
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Preferencias
-    // ------------------------------------------------------------------
-    private void loadPrefs() {
-        globalAlpha = sp.getFloat("g_alpha", DEF_ALPHA);
-        globalScale = sp.getFloat("g_scale", DEF_SCALE);
-        toleranceDp = sp.getInt("g_tol", DEF_TOLERANCE_DP);
-        for (Ctl c : ctls) {
-            c.visible = sp.getBoolean(c.key + "_v", c.defVisible);
-            c.scale = sp.getFloat(c.key + "_s", 1f);
-            c.alpha = sp.getFloat(c.key + "_a", 1f);
-            c.code = sp.getInt(c.key + "_c", c.defCode);
-            c.icon = sp.getInt(c.key + "_i", c.defIcon);
-            c.fx = sp.getFloat(c.key + "_x", -1f);
-            c.fy = sp.getFloat(c.key + "_y", -1f);
-            if (c.icon < 0 || c.icon >= ICON_RES.length) c.icon = c.defIcon;
-            if (indexOfCode(c.code) < 0) c.code = c.defCode;
-        }
-    }
-
-    private void savePrefs() {
-        SharedPreferences.Editor e = sp.edit();
-        e.putFloat("g_alpha", globalAlpha);
-        e.putFloat("g_scale", globalScale);
-        e.putInt("g_tol", toleranceDp);
-        for (Ctl c : ctls) {
-            e.putBoolean(c.key + "_v", c.visible);
-            e.putFloat(c.key + "_s", c.scale);
-            e.putFloat(c.key + "_a", c.alpha);
-            e.putInt(c.key + "_c", c.code);
-            e.putInt(c.key + "_i", c.icon);
-            e.putFloat(c.key + "_x", c.fx);
-            e.putFloat(c.key + "_y", c.fy);
-        }
-        e.apply();
-    }
-
-    private void resetCtl(Ctl c) {
-        c.visible = c.defVisible;
-        c.scale = 1f;
-        c.alpha = 1f;
-        c.code = c.defCode;
-        c.icon = c.defIcon;
-        c.fx = -1f;
-        c.fy = -1f;
-    }
-
-    private void resetAll() {
-        globalAlpha = DEF_ALPHA;
-        globalScale = DEF_SCALE;
-        toleranceDp = DEF_TOLERANCE_DP;
-        for (Ctl c : ctls) resetCtl(c);
-        sp.edit().clear().apply();
-        applyLayout();
-    }
-
-    private static int indexOfCode(int code) {
-        for (int i = 0; i < CODES.length; i++) {
-            if (CODES[i] == code) return i;
-        }
-        return -1;
+        loadPrefs();
+        buildPanel(context);
     }
 
     // ------------------------------------------------------------------
     // Layout
     // ------------------------------------------------------------------
-    @Override
-    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        super.onSizeChanged(w, h, oldw, oldh);
-        post(new Runnable() {
-            @Override
-            public void run() {
-                applyLayout();
-            }
-        });
-    }
-
-    private float[] defaultCenter(String key, int W, int H) {
+    private float[] defaultCenter(Ctl c, int W, int H) {
         float d = density;
-        float bs = 68f * d;
-        float step = bs + 10f * d;
-        float c2x = W - 28f * d - bs / 2f;
+        float bs = 64f * d;
+        float step = bs + 12f * d;
+        float c2x = W - 34f * d - bs / 2f;
         float c1x = c2x - step;
         float c0x = c1x - step;
-        float r2y = H - 30f * d - bs / 2f;
-        float r1y = r2y - step;
+        float r1y = H - 30f * d - bs / 2f;
         float r0y = r1y - step;
-        switch (key) {
-            case "dpad":   return new float[]{40f * d + 80f * d, H - 30f * d - 80f * d};
-            case "analog": return new float[]{300f * d, H - 30f * d - 60f * d};
-            case "a":      return new float[]{c0x, r2y};
-            case "b":      return new float[]{c1x, r2y};
-            case "c":      return new float[]{c2x, r2y};
-            case "x":      return new float[]{c0x, r1y};
-            case "y":      return new float[]{c1x, r1y};
-            case "start":  return new float[]{c2x, r1y};
-            case "d":      return new float[]{c0x, r0y};
-            case "w":      return new float[]{c1x, r0y};
+        switch (c.key) {
+            case "analog": return new float[]{40f * d + 75f * d, H - 30f * d - 75f * d};
+            case "a":      return new float[]{c0x, r1y};
+            case "b":      return new float[]{c1x, r1y};
+            case "c":      return new float[]{c2x, r1y};
+            case "x":      return new float[]{c0x, r0y};
+            case "y":      return new float[]{c1x, r0y};
             case "z":      return new float[]{c2x, r0y};
-            case "menu":   return new float[]{W / 2f, H - 14f * d - 22f * d};
+            case "menu":   return new float[]{W - 34f * d - 52f * d, 12f * d + 20f * d};
+            case "start":  return new float[]{W - 34f * d, 12f * d + 20f * d};
             default:       return new float[]{W / 2f, H / 2f};
         }
     }
 
-    private void place(View v, float cx, float cy, int size) {
-        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(size, size);
-        lp.leftMargin = Math.round(cx - size / 2f);
-        lp.topMargin = Math.round(cy - size / 2f);
-        v.setLayoutParams(lp);
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        applyLayout();
     }
 
     private void applyLayout() {
-        int W = getWidth();
-        int H = getHeight();
+        int W = getWidth(), H = getHeight();
         if (W <= 0 || H <= 0) return;
-
         for (Ctl c : ctls) {
-            if (c.view == null) continue;
-            boolean show = c.visible || editMode;
-            c.view.setVisibility(show ? View.VISIBLE : View.GONE);
-
-            int size = Math.round(c.baseDp * density * globalScale * c.scale);
-            float cx, cy;
             if (c.fx >= 0f && c.fy >= 0f) {
-                cx = c.fx * W;
-                cy = c.fy * H;
+                c.cx = c.fx * W;
+                c.cy = c.fy * H;
             } else {
-                float[] p = defaultCenter(c.key, W, H);
-                cx = p[0];
-                cy = p[1];
+                float[] p = defaultCenter(c, W, H);
+                c.cx = p[0];
+                c.cy = p[1];
             }
-            place(c.view, cx, cy, size);
-
-            float a = globalAlpha * c.alpha;
-            if (!c.visible) a = 0.35f; // so aparece assim no modo de edicao
-            c.view.setAlpha(a);
-
-            if (c.type == TYPE_BUTTON && c.view instanceof ImageView && c.shownIcon != c.icon) {
-                ((ImageView) c.view).setImageResource(ICON_RES[c.icon]);
-                c.shownIcon = c.icon;
-            }
-        }
-
-        if (gearView != null) {
-            int gs = Math.round(32f * density);
-            place(gearView, W - 28f * density, 24f * density, gs);
-            gearView.setAlpha(0.35f);
-            gearView.setVisibility(editMode ? View.GONE : View.VISIBLE);
         }
         invalidate();
     }
 
-    @Override
-    protected void dispatchDraw(Canvas canvas) {
-        super.dispatchDraw(canvas);
-        if (!editMode) return;
+    // ------------------------------------------------------------------
+    // Preferencias (cada controle tem o seu proprio conjunto)
+    // ------------------------------------------------------------------
+    private void loadPrefs() {
         for (Ctl c : ctls) {
-            View v = c.view;
-            if (v == null || v.getVisibility() != View.VISIBLE) continue;
-            outlinePaint.setColor(c.visible ? 0xFF00E676 : 0xFFFFB300);
-            canvas.drawCircle(v.getLeft() + v.getWidth() / 2f, v.getTop() + v.getHeight() / 2f,
-                    v.getWidth() / 2f, outlinePaint);
+            String k = c.key + ".";
+            c.visible = sp.getBoolean(k + "visible", true);
+            c.scale = sp.getFloat(k + "scale", 1f);
+            c.alpha = sp.getFloat(k + "alpha", 0.8f);
+            c.code = sp.getInt(k + "code", c.defCode);
+            c.fx = sp.getFloat(k + "fx", -1f);
+            c.fy = sp.getFloat(k + "fy", -1f);
         }
+    }
+
+    private void savePrefs() {
+        SharedPreferences.Editor e = sp.edit();
+        for (Ctl c : ctls) {
+            String k = c.key + ".";
+            e.putBoolean(k + "visible", c.visible);
+            e.putFloat(k + "scale", c.scale);
+            e.putFloat(k + "alpha", c.alpha);
+            e.putInt(k + "code", c.code);
+            e.putFloat(k + "fx", c.fx);
+            e.putFloat(k + "fy", c.fy);
+        }
+        e.apply();
+    }
+
+    private void resetCtl(Ctl c) {
+        c.visible = true;
+        c.scale = 1f;
+        c.alpha = 0.8f;
+        c.code = c.defCode;
+        c.fx = -1f;
+        c.fy = -1f;
+    }
+
+    // ------------------------------------------------------------------
+    // Desenho
+    // ------------------------------------------------------------------
+    @Override
+    protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        if (editMode) {
+            for (Ctl c : ctls) drawCtl(canvas, c, true);
+            if (selected != null) {
+                float r = selected.radius(density) + 8f * density;
+                canvas.drawCircle(selected.cx, selected.cy, r, dashPaint);
+            }
+        } else if (mode == MODE_FIGHT) {
+            for (Ctl c : ctls) {
+                if (c.visible) drawCtl(canvas, c, false);
+            }
+        } else {
+            drawBackButton(canvas);
+        }
+    }
+
+    private int gray(float alpha) {
+        return Color.argb((int) (255 * Math.max(0.1f, Math.min(1f, alpha))), 215, 215, 215);
+    }
+
+    private void drawCtl(Canvas canvas, Ctl c, boolean editing) {
+        float r = c.radius(density);
+        float a = c.visible ? c.alpha : 0.25f; // oculto: so aparece "fantasma" no editor
+        ringPaint.setColor(gray(a));
+        if (c.type == TYPE_ANALOG) {
+            // anel externo (transparente por dentro)
+            canvas.drawCircle(c.cx, c.cy, r, ringPaint);
+            // setinhas
+            fillPaint.setColor(gray(a * 0.8f));
+            float t = r * 0.86f, s = r * 0.09f;
+            drawArrow(canvas, c.cx, c.cy - t, 0, -1, s);
+            drawArrow(canvas, c.cx, c.cy + t, 0, 1, s);
+            drawArrow(canvas, c.cx - t, c.cy, -1, 0, s);
+            drawArrow(canvas, c.cx + t, c.cy, 1, 0, s);
+            // "pino" tambem so com contorno
+            float tr = r * 0.38f;
+            float px = c.cx + (analogPointer != -1 && !editing ? thumbDx : 0f);
+            float py = c.cy + (analogPointer != -1 && !editing ? thumbDy : 0f);
+            ringPaint.setStrokeWidth(3f * density);
+            canvas.drawCircle(px, py, tr, ringPaint);
+            ringPaint.setStrokeWidth(2.5f * density);
+            textPaint.setColor(gray(a));
+            textPaint.setTextSize(tr * 0.9f);
+            canvas.drawText("L", px, py + tr * 0.32f, textPaint);
+        } else {
+            if (c.pressed && !editing) {
+                fillPaint.setColor(Color.argb((int) (90 * a), 255, 255, 255));
+                canvas.drawCircle(c.cx, c.cy, r, fillPaint);
+            }
+            canvas.drawCircle(c.cx, c.cy, r, ringPaint);
+            textPaint.setColor(gray(a));
+            String label = labelFor(c.code);
+            textPaint.setTextSize(r * (label.length() > 2 ? 0.42f : 0.8f));
+            canvas.drawText(label, c.cx, c.cy + textPaint.getTextSize() * 0.35f, textPaint);
+        }
+    }
+
+    private void drawArrow(Canvas canvas, float x, float y, int dx, int dy, float s) {
+        arrowPath.reset();
+        if (dx == 0) {
+            arrowPath.moveTo(x, y + dy * s);
+            arrowPath.lineTo(x - s, y - dy * s);
+            arrowPath.lineTo(x + s, y - dy * s);
+        } else {
+            arrowPath.moveTo(x + dx * s, y);
+            arrowPath.lineTo(x - dx * s, y - s);
+            arrowPath.lineTo(x - dx * s, y + s);
+        }
+        arrowPath.close();
+        canvas.drawPath(arrowPath, fillPaint);
+    }
+
+    private String labelFor(int code) {
+        for (int i = 0; i < CODES.length; i++) {
+            if (CODES[i] == code) return CODE_NAMES[i];
+        }
+        return "?";
+    }
+
+    // Botao "Voltar" mostrado nos menus: cancelar / voltar
+    private RectF backRect() {
+        float d = density;
+        return new RectF(14f * d, 12f * d, 14f * d + 96f * d, 12f * d + 40f * d);
+    }
+
+    private void drawBackButton(Canvas canvas) {
+        RectF r = backRect();
+        if (backPointer != -1) {
+            fillPaint.setColor(Color.argb(70, 255, 255, 255));
+            canvas.drawRoundRect(r, 20f * density, 20f * density, fillPaint);
+        }
+        ringPaint.setColor(gray(0.8f));
+        canvas.drawRoundRect(r, 20f * density, 20f * density, ringPaint);
+        textPaint.setColor(gray(0.9f));
+        textPaint.setTextSize(15f * density);
+        canvas.drawText("\u25C0  VOLTAR", r.centerX(), r.centerY() + 5.5f * density, textPaint);
+    }
+
+    // ------------------------------------------------------------------
+    // Modo (vindo do engine) e editor
+    // ------------------------------------------------------------------
+    public void setMode(int newMode) {
+        if (mode == newMode) return;
+        releaseAll();
+        mode = newMode;
+        invalidate();
+    }
+
+    public void openEditor() {
+        if (!isInitialized) {
+            initializeVirtualController();
+        }
+        releaseAll();
+        editMode = true;
+        selected = null;
+        panel.setVisibility(View.VISIBLE);
+        updatePanel();
+        bringChildToFront(panel);
+        invalidate();
+    }
+
+    private void closeEditor() {
+        editMode = false;
+        selected = null;
+        dragging = null;
+        dragPointer = -1;
+        savePrefs();
+        panel.setVisibility(View.GONE);
+        invalidate();
+    }
+
+    private Ctl findCtlAt(float x, float y) {
+        // da frente para tras: os ultimos da lista ficam por cima
+        for (int i = ctls.size() - 1; i >= 0; i--) {
+            Ctl c = ctls.get(i);
+            float r = c.radius(density);
+            float dx = x - c.cx, dy = y - c.cy;
+            if (dx * dx + dy * dy <= r * r) return c;
+        }
+        return null;
+    }
+
+    private boolean handleEditTouch(MotionEvent e) {
+        int action = e.getActionMasked();
+        int idx = e.getActionIndex();
+        float x = e.getX(idx), y = e.getY(idx);
+        if (action == MotionEvent.ACTION_DOWN) {
+            Ctl c = findCtlAt(x, y);
+            if (c != null) {
+                selected = c;
+                dragging = c;
+                dragPointer = e.getPointerId(idx);
+                dragOffX = c.cx - x;
+                dragOffY = c.cy - y;
+                updatePanel();
+            } else {
+                selected = null;
+                updatePanel();
+            }
+            invalidate();
+        } else if (action == MotionEvent.ACTION_MOVE && dragging != null) {
+            int pi = e.findPointerIndex(dragPointer);
+            if (pi >= 0) {
+                float nx = e.getX(pi) + dragOffX;
+                float ny = e.getY(pi) + dragOffY;
+                float r = dragging.radius(density);
+                nx = Math.max(r, Math.min(getWidth() - r, nx));
+                ny = Math.max(r, Math.min(getHeight() - r, ny));
+                dragging.cx = nx;
+                dragging.cy = ny;
+                dragging.fx = nx / getWidth();
+                dragging.fy = ny / getHeight();
+                invalidate();
+            }
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (dragging != null) savePrefs();
+            dragging = null;
+            dragPointer = -1;
+        }
+        return true;
+    }
+
+    private void buildPanel(Context context) {
+        int pad = (int) (10 * density);
+        panel = new LinearLayout(context);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(pad, pad, pad, pad);
+        panel.setBackgroundColor(Color.argb(215, 18, 18, 22));
+        panel.setVisibility(View.GONE);
+
+        panelTitle = new TextView(context);
+        panelTitle.setTextColor(Color.WHITE);
+        panelTitle.setTextSize(16f);
+        panelTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        panelTitle.setGravity(Gravity.CENTER);
+        panel.addView(panelTitle);
+
+        sizeLabel = new TextView(context);
+        sizeLabel.setTextColor(Color.LTGRAY);
+        panel.addView(sizeLabel);
+        sizeBar = new SeekBar(context);
+        sizeBar.setMax(150); // 50% .. 200%
+        sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (updatingPanel || selected == null) return;
+                selected.scale = (50 + p) / 100f;
+                sizeLabel.setText("Tamanho: " + (50 + p) + "%");
+                invalidate();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) { savePrefs(); }
+        });
+        panel.addView(sizeBar);
+
+        alphaLabel = new TextView(context);
+        alphaLabel.setTextColor(Color.LTGRAY);
+        panel.addView(alphaLabel);
+        alphaBar = new SeekBar(context);
+        alphaBar.setMax(80); // 20% .. 100%
+        alphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (updatingPanel || selected == null) return;
+                selected.alpha = (20 + p) / 100f;
+                alphaLabel.setText("Opacidade: " + (20 + p) + "%");
+                invalidate();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) { savePrefs(); }
+        });
+        panel.addView(alphaBar);
+
+        keyRow = new LinearLayout(context);
+        keyRow.setOrientation(LinearLayout.HORIZONTAL);
+        keyRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView keyLabel = new TextView(context);
+        keyLabel.setTextColor(Color.LTGRAY);
+        keyLabel.setText("Tecla: ");
+        keyRow.addView(keyLabel);
+        keySpinner = new Spinner(context);
+        ArrayAdapter<String> ad = new ArrayAdapter<>(context, android.R.layout.simple_spinner_item, CODE_NAMES);
+        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        keySpinner.setAdapter(ad);
+        keySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
+                if (updatingPanel || selected == null || selected.type != TYPE_BUTTON) return;
+                selected.code = CODES[pos];
+                savePrefs();
+                invalidate();
+            }
+            @Override public void onNothingSelected(AdapterView<?> p) {}
+        });
+        keyRow.addView(keySpinner);
+        panel.addView(keyRow);
+
+        visibleBox = new CheckBox(context);
+        visibleBox.setText("Mostrar no jogo");
+        visibleBox.setTextColor(Color.WHITE);
+        visibleBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean checked) {
+                if (updatingPanel || selected == null) return;
+                selected.visible = checked;
+                savePrefs();
+                invalidate();
+            }
+        });
+        panel.addView(visibleBox);
+
+        LinearLayout buttons = new LinearLayout(context);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        Button resetOne = new Button(context);
+        resetOne.setText("Restaurar este");
+        resetOne.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (selected == null) return;
+                resetCtl(selected);
+                applyLayout();
+                updatePanel();
+                savePrefs();
+            }
+        });
+        Button resetAll = new Button(context);
+        resetAll.setText("Restaurar tudo");
+        resetAll.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmResetAll();
+            }
+        });
+        Button done = new Button(context);
+        done.setText("Concluir");
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeEditor();
+            }
+        });
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        buttons.addView(resetOne, bp);
+        buttons.addView(resetAll, bp);
+        buttons.addView(done, bp);
+        panel.addView(buttons);
+
+        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams((int) (340 * density), LayoutParams.WRAP_CONTENT);
+        lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+        lp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        lp.topMargin = (int) (6 * density);
+        addView(panel, lp);
+    }
+
+    private void confirmResetAll() {
+        AlertDialog.Builder b = new AlertDialog.Builder(getContext());
+        b.setMessage("Restaurar todos os controles para o padrao?");
+        b.setPositiveButton("Restaurar", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface d, int which) {
+                for (Ctl c : ctls) resetCtl(c);
+                applyLayout();
+                updatePanel();
+                savePrefs();
+            }
+        });
+        b.setNegativeButton("Cancelar", null);
+        b.show();
+    }
+
+    private void updatePanel() {
+        updatingPanel = true;
+        if (selected == null) {
+            panelTitle.setText("Toque num controle para editar");
+            sizeBar.setEnabled(false);
+            alphaBar.setEnabled(false);
+            visibleBox.setEnabled(false);
+            keySpinner.setEnabled(false);
+            sizeLabel.setText("Tamanho");
+            alphaLabel.setText("Opacidade");
+            keyRow.setVisibility(View.VISIBLE);
+        } else {
+            panelTitle.setText(selected.title);
+            sizeBar.setEnabled(true);
+            alphaBar.setEnabled(true);
+            visibleBox.setEnabled(true);
+            sizeBar.setProgress(Math.round(selected.scale * 100f) - 50);
+            alphaBar.setProgress(Math.round(selected.alpha * 100f) - 20);
+            sizeLabel.setText("Tamanho: " + Math.round(selected.scale * 100f) + "%");
+            alphaLabel.setText("Opacidade: " + Math.round(selected.alpha * 100f) + "%");
+            visibleBox.setChecked(selected.visible);
+            boolean isBtn = selected.type == TYPE_BUTTON;
+            keyRow.setVisibility(isBtn ? View.VISIBLE : View.GONE);
+            keySpinner.setEnabled(isBtn);
+            if (isBtn) {
+                for (int i = 0; i < CODES.length; i++) {
+                    if (CODES[i] == selected.code) keySpinner.setSelection(i);
+                }
+            }
+        }
+        updatingPanel = false;
     }
 
     // ------------------------------------------------------------------
@@ -444,155 +668,165 @@ public class ControllerOverlay extends RelativeLayout {
     public boolean onInterceptTouchEvent(MotionEvent ev) {
         if (!isInitialized) {
             initializeVirtualController();
-            isInitialized = true;
         }
-        return true;
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            panelGesture = false;
+            if (editMode && panel.getVisibility() == View.VISIBLE) {
+                float x = ev.getX(), y = ev.getY();
+                panelGesture = x >= panel.getLeft() && x <= panel.getRight()
+                        && y >= panel.getTop() && y <= panel.getBottom();
+            }
+        }
+        return !panelGesture; // no painel do editor os filhos recebem o toque
     }
-
-    private int leftJoyPointerId = -1;
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (editMode) {
             return handleEditTouch(event);
         }
+        if (mode == MODE_MENU) {
+            return handleMenuTouch(event);
+        }
+        return handleFightTouch(event);
+    }
 
+    // Menus: so o "Voltar" e nosso; o resto vai para o jogo (SDL) como toque
+    private boolean handleMenuTouch(MotionEvent event) {
+        int action = event.getActionMasked();
+        int idx = event.getActionIndex();
+        if (action == MotionEvent.ACTION_DOWN) {
+            menuForwarding = false;
+            if (backRect().contains(event.getX(idx), event.getY(idx))) {
+                backPointer = event.getPointerId(idx);
+                handleCode(BACK_CODE, true);
+                invalidate();
+                return true;
+            }
+            menuForwarding = true;
+        }
+        if (backPointer != -1) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                handleCode(BACK_CODE, false);
+                backPointer = -1;
+                invalidate();
+            }
+            return true;
+        }
+        if (menuForwarding && SDLActivity.mSurface != null) {
+            SDLActivity.mSurface.onTouch(SDLActivity.mSurface, event);
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                menuForwarding = false;
+            }
+        }
+        return true;
+    }
+
+    private boolean handleFightTouch(MotionEvent event) {
         int action = event.getActionMasked();
         int index = event.getActionIndex();
         int pId = event.getPointerId(index);
 
-        float x = event.getX(index);
-        float y = event.getY(index);
-
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
-            if (gearView != null && isViewAtLocation(gearView, x, y)) {
-                // engrenagem: precisa segurar para abrir (evita abrir sem querer na luta)
-                gearPointerId = pId;
-                postDelayed(gearRunnable, 600);
-            } else if (isViewAtLocation(analogCtl.view, x, y) && analogCtl.visible) {
-                leftJoyPointerId = pId;
-            } else {
-                updatePointer(pId, getButtonsAt(x, y));
+            float x = event.getX(index), y = event.getY(index);
+            Ctl hit = hitTest(x, y);
+            if (hit == analogCtl) {
+                analogPointer = pId;
+                updateAnalog(x, y);
+            } else if (hit != null) {
+                pointerCtl.put(pId, hit);
+                hit.pressed = true;
+                handleCode(hit.code, true);
             }
         } else if (action == MotionEvent.ACTION_MOVE) {
             for (int i = 0; i < event.getPointerCount(); i++) {
-                int movePId = event.getPointerId(i);
-                if (movePId == gearPointerId) continue;
-
-                float mx = event.getX(i);
-                float my = event.getY(i);
-
-                if (movePId == leftJoyPointerId) {
-                    updateJoystickLogic(analogCtl.view, mx, my);
-                } else {
-                    Set<Integer> currentButtons = getButtonsAt(mx, my);
-                    Set<Integer> lastButtons = pointerStates.get(movePId);
-
-                    if (!currentButtons.equals(lastButtons)) {
-                        updatePointer(movePId, currentButtons);
-                    }
+                int id = event.getPointerId(i);
+                if (id == analogPointer) {
+                    updateAnalog(event.getX(i), event.getY(i));
                 }
             }
-        } else if (action == MotionEvent.ACTION_CANCEL) {
-            cancelGear();
-            releaseAll();
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
-            if (pId == gearPointerId) {
-                cancelGear();
-            } else if (pId == leftJoyPointerId) {
-                resetJoystick(analogCtl.view);
-                leftJoyPointerId = -1;
-            } else {
-                releasePointer(pId);
-            }
+            releasePointer(pId);
+        } else if (action == MotionEvent.ACTION_CANCEL) {
+            releaseAll();
         }
-
-        updateDpadState(event);
+        invalidate();
         return true;
     }
 
-    private void cancelGear() {
-        removeCallbacks(gearRunnable);
-        gearPointerId = -1;
-    }
-
-    private void updateJoystickLogic(View v, float x, float y) {
-        if (!(v instanceof JoystickOverlay)) return;
-        JoystickOverlay joy = (JoystickOverlay) v;
-
-        float centerX = v.getLeft() + (v.getWidth() / 2f);
-        float centerY = v.getTop() + (v.getHeight() / 2f);
-        float radius = v.getWidth() / 3f;
-
-        float dx = x - centerX;
-        float dy = y - centerY;
-        float distance = (float) Math.sqrt(dx * dx + dy * dy);
-
-        if (distance > radius) {
-            dx = (dx / distance) * radius;
-            dy = (dy / distance) * radius;
+    private Ctl hitTest(float x, float y) {
+        float slop = 8f * density; // tolerancia
+        for (int i = ctls.size() - 1; i >= 0; i--) {
+            Ctl c = ctls.get(i);
+            if (!c.visible) continue;
+            float r = c.radius(density) + (c.type == TYPE_ANALOG ? c.radius(density) * 0.3f : slop);
+            float dx = x - c.cx, dy = y - c.cy;
+            if (dx * dx + dy * dy <= r * r) return c;
         }
-
-        joy.updateVisualPos((v.getWidth() / 2f) + dx, (v.getHeight() / 2f) + dy);
-        joy.sendToSDL(dx / radius, dy / radius);
+        return null;
     }
 
-    private void resetJoystick(View v) {
-        if (!(v instanceof JoystickOverlay)) return;
-        JoystickOverlay joy = (JoystickOverlay) v;
-        joy.updateVisualPos(v.getWidth() / 2f, v.getHeight() / 2f);
-        joy.sendToSDL(0, 0);
-    }
-
-    private void updatePointer(int pointerId, Set<Integer> newIdx) {
-        Set<Integer> oldIdx = pointerStates.get(pointerId);
-        if (oldIdx == null) oldIdx = new HashSet<>();
-        for (Integer old : oldIdx) {
-            if (!newIdx.contains(old)) {
-                handleControl(old, false);
-            }
+    private void releasePointer(int pId) {
+        if (pId == analogPointer) {
+            analogPointer = -1;
+            thumbDx = 0f;
+            thumbDy = 0f;
+            setHat(0, 0);
         }
-        for (Integer n : newIdx) {
-            if (!oldIdx.contains(n)) {
-                handleControl(n, true);
-            }
-        }
-        pointerStates.put(pointerId, newIdx);
-    }
-
-    private void releasePointer(int pointerId) {
-        Set<Integer> last = pointerStates.remove(pointerId);
-        if (last != null) {
-            for (Integer idx : last) {
-                handleControl(idx, false);
-            }
+        Ctl c = pointerCtl.remove(pId);
+        if (c != null) {
+            c.pressed = false;
+            handleCode(c.code, false);
         }
     }
 
-    /** Solta tudo (usado antes de abrir menus e em ACTION_CANCEL) para nao deixar tecla presa. */
     private void releaseAll() {
-        List<Integer> ids = new ArrayList<>(pointerStates.keySet());
-        for (int id : ids) {
-            releasePointer(id);
+        List<Integer> ids = new ArrayList<>(pointerCtl.keySet());
+        for (int id : ids) releasePointer(id);
+        if (analogPointer != -1) releasePointer(analogPointer);
+        if (backPointer != -1) {
+            handleCode(BACK_CODE, false);
+            backPointer = -1;
         }
         codeCounts.clear();
-        if (leftJoyPointerId != -1) {
-            resetJoystick(analogCtl.view);
-            leftJoyPointerId = -1;
-        }
-        if (hatX != 0 || hatY != 0) {
-            hatX = 0;
-            hatY = 0;
-            SDLControllerManager.onNativeHat(virtualDeviceId, 0, 0, 0);
-            updateDpadVisual(0, 0);
-        }
+        setHat(0, 0);
+        for (Ctl c : ctls) c.pressed = false;
+        invalidate();
     }
 
-    /** Pressiona/solta um controle; dois controles mapeados para o mesmo codigo nao se atrapalham. */
-    private void handleControl(int idx, boolean pressed) {
-        if (idx < 0 || idx >= ctls.size()) return;
-        Ctl c = ctls.get(idx);
-        int code = c.code;
+    // Analogico: o visual segue o dedo; para o jogo vira direcao digital de 8 sentidos (hat)
+    private void updateAnalog(float x, float y) {
+        float r = analogCtl.radius(density);
+        float dx = x - analogCtl.cx;
+        float dy = y - analogCtl.cy;
+        float dist = (float) Math.sqrt(dx * dx + dy * dy);
+        float limit = r * 0.55f;
+        if (dist > limit && dist > 0f) {
+            thumbDx = dx / dist * limit;
+            thumbDy = dy / dist * limit;
+        } else {
+            thumbDx = dx;
+            thumbDy = dy;
+        }
+        int nx = 0, ny = 0;
+        if (dist > r * 0.22f) {
+            float ux = dx / dist, uy = dy / dist;
+            if (ux > 0.38f) nx = 1; else if (ux < -0.38f) nx = -1;
+            if (uy > 0.38f) ny = 1; else if (uy < -0.38f) ny = -1;
+        }
+        setHat(nx, ny);
+    }
+
+    private void setHat(int nx, int ny) {
+        if (nx == hatX && ny == hatY) return;
+        if (!isInitialized) return;
+        hatX = nx;
+        hatY = ny;
+        SDLControllerManager.onNativeHat(virtualDeviceId, 0, hatX, hatY);
+    }
+
+    /** Pressiona/solta uma tecla; dois controles com a mesma tecla nao se atrapalham. */
+    private void handleCode(int code, boolean pressed) {
         Integer cnt = codeCounts.get(code);
         int n = (cnt == null) ? 0 : cnt;
         if (pressed) {
@@ -602,14 +836,14 @@ public class ControllerOverlay extends RelativeLayout {
             codeCounts.put(code, n - 1);
             if (n == 1) sendCode(code, false);
         }
-        setPressedVisual(c.view, pressed ? 120 : 0);
     }
 
     private void sendCode(final int code, boolean pressed) {
-        if (code >= 4000) { // TRIGGERS
+        if (!isInitialized) return;
+        if (code >= 4000) { // gatilhos
             int axis = code - 4000;
             SDLControllerManager.onNativeJoy(virtualDeviceId, axis, pressed ? 1.0f : 0.0f);
-        } else { // STANDARD BUTTONS
+        } else {
             if (pressed) {
                 SDLControllerManager.onNativeHat(virtualDeviceId, 0, hatX, hatY);
                 int result = SDLControllerManager.onNativePadDown(virtualDeviceId, code);
@@ -622,451 +856,25 @@ public class ControllerOverlay extends RelativeLayout {
         }
     }
 
-    private void setPressedVisual(View v, int darkAlpha) {
-        if (!(v instanceof ImageView)) return;
-        if (darkAlpha > 0) {
-            ((ImageView) v).setColorFilter(Color.argb(darkAlpha, 0, 0, 0));
-        } else {
-            ((ImageView) v).clearColorFilter();
-        }
-    }
-
-    private void updateDpadState(MotionEvent event) {
-        int newX = 0, newY = 0;
-        int action = event.getActionMasked();
-
-        if (action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL
-                && dpadCtl.visible && dpadCtl.view != null) {
-            View container = dpadCtl.view;
-
-            float centerX = container.getLeft() + (container.getWidth() / 2f);
-            float centerY = container.getTop() + (container.getHeight() / 2f);
-            float radius = container.getWidth() / 2f;
-
-            for (int i = 0; i < event.getPointerCount(); i++) {
-                if (action == MotionEvent.ACTION_POINTER_UP && i == event.getActionIndex()) continue;
-                int pid = event.getPointerId(i);
-                if (pid == gearPointerId || pid == leftJoyPointerId) continue;
-
-                float x = event.getX(i);
-                float y = event.getY(i);
-
-                float dx = x - centerX;
-                float dy = y - centerY;
-                float distance = (float) Math.sqrt(dx * dx + dy * dy);
-
-                // Zona morta no centro e limite externo
-                if (distance > (radius * 0.2f) && distance < (radius * 1.3f)) {
-                    double angle = Math.toDegrees(Math.atan2(dy, dx));
-                    if (angle < 0) angle += 360;
-
-                    // 8 direcoes: cardeais 30 graus, diagonais 60 graus
-                    if (angle >= 345 || angle < 15)        newX = 1;                // Direita
-                    else if (angle >= 15  && angle < 75)   { newX = 1; newY = 1; }  // Baixo-Direita
-                    else if (angle >= 75  && angle < 105)  newY = 1;                // Baixo
-                    else if (angle >= 105 && angle < 165)  { newX = -1; newY = 1; } // Baixo-Esquerda
-                    else if (angle >= 165 && angle < 195)  newX = -1;               // Esquerda
-                    else if (angle >= 195 && angle < 255)  { newX = -1; newY = -1; } // Cima-Esquerda
-                    else if (angle >= 255 && angle < 285)  newY = -1;               // Cima
-                    else if (angle >= 285 && angle < 345)  { newX = 1; newY = -1; } // Cima-Direita
-
-                    break; // um dedo basta para o D-pad
-                }
-            }
-        }
-
-        if (newX != hatX || newY != hatY) {
-            hatX = newX;
-            hatY = newY;
-            SDLControllerManager.onNativeHat(virtualDeviceId, 0, hatX, hatY);
-            updateDpadVisual(hatX, hatY);
-        }
-    }
-
-    private void updateDpadVisual(int hX, int hY) {
-        setPressedVisual(dpadCtl.view, (hX != 0 || hY != 0) ? 70 : 0);
-    }
-
-    private Set<Integer> getButtonsAt(float x, float y) {
-        Set<Integer> found = new HashSet<>();
-        float pad = toleranceDp * density;
-        for (int i = 0; i < ctls.size(); i++) {
-            Ctl c = ctls.get(i);
-            if (c.type != TYPE_BUTTON || !c.visible) continue;
-            View v = c.view;
-            if (v == null || v.getVisibility() != View.VISIBLE) continue;
-            float cx = v.getLeft() + v.getWidth() / 2f;
-            float cy = v.getTop() + v.getHeight() / 2f;
-            float r = v.getWidth() / 2f + pad;
-            float dx = x - cx;
-            float dy = y - cy;
-            if (dx * dx + dy * dy <= r * r) {
-                found.add(i);
-            }
-        }
-        return found;
-    }
-
-    // Helper to check if a finger is inside a specific view's area
-    private boolean isViewAtLocation(View v, float x, float y) {
-        if (v == null || v.getVisibility() != View.VISIBLE) return false;
-
-        int[] vLoc = new int[2];
-        v.getLocationOnScreen(vLoc);
-
-        int[] parentLoc = new int[2];
-        this.getLocationOnScreen(parentLoc);
-
-        int relativeLeft = vLoc[0] - parentLoc[0];
-        int relativeTop = vLoc[1] - parentLoc[1];
-
-        return x >= relativeLeft && x <= (relativeLeft + v.getWidth()) &&
-                y >= relativeTop && y <= (relativeTop + v.getHeight());
-    }
-
-    // ------------------------------------------------------------------
-    // Modo de edicao (arrastar / tocar para ajustar)
-    // ------------------------------------------------------------------
-    private void enterEditMode() {
-        releaseAll();
-        editMode = true;
-        editBar.setVisibility(View.VISIBLE);
-        applyLayout();
-        Toast.makeText(getContext(), R.string.touch_edit_hint, Toast.LENGTH_LONG).show();
-    }
-
-    private void exitEditMode() {
-        editMode = false;
-        dragCtl = null;
-        editBar.setVisibility(View.GONE);
-        savePrefs();
-        applyLayout();
-    }
-
-    private Ctl findCtlAt(float x, float y) {
-        for (int i = ctls.size() - 1; i >= 0; i--) {
-            Ctl c = ctls.get(i);
-            View v = c.view;
-            if (v == null || v.getVisibility() != View.VISIBLE) continue;
-            float cx = v.getLeft() + v.getWidth() / 2f;
-            float cy = v.getTop() + v.getHeight() / 2f;
-            float r = v.getWidth() / 2f;
-            float dx = x - cx;
-            float dy = y - cy;
-            if (dx * dx + dy * dy <= r * r) return c;
-        }
-        return null;
-    }
-
-    private boolean handleEditTouch(MotionEvent e) {
-        float x = e.getX();
-        float y = e.getY();
-        switch (e.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-                if (isViewAtLocation(btnEditDone, x, y)) {
-                    exitEditMode();
-                    return true;
-                }
-                if (isViewAtLocation(btnEditOptions, x, y)) {
-                    showMainDialog();
-                    return true;
-                }
-                dragCtl = findCtlAt(x, y);
-                if (dragCtl != null) {
-                    View v = dragCtl.view;
-                    float cx = v.getLeft() + v.getWidth() / 2f;
-                    float cy = v.getTop() + v.getHeight() / 2f;
-                    dragDX = cx - x;
-                    dragDY = cy - y;
-                    downX = x;
-                    downY = y;
-                    dragMoved = false;
-                }
-                return true;
-            case MotionEvent.ACTION_MOVE:
-                if (dragCtl != null) {
-                    if (!dragMoved) {
-                        float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
-                        float mx = x - downX;
-                        float my = y - downY;
-                        if (mx * mx + my * my > slop * slop) dragMoved = true;
-                    }
-                    if (dragMoved) {
-                        int W = getWidth();
-                        int H = getHeight();
-                        float nx = Math.max(0f, Math.min(W, x + dragDX));
-                        float ny = Math.max(0f, Math.min(H, y + dragDY));
-                        dragCtl.fx = nx / W;
-                        dragCtl.fy = ny / H;
-                        applyLayout();
-                    }
-                }
-                return true;
-            case MotionEvent.ACTION_UP:
-                if (dragCtl != null) {
-                    Ctl c = dragCtl;
-                    dragCtl = null;
-                    if (dragMoved) {
-                        savePrefs();
-                    } else {
-                        showCtlDialog(c);
-                    }
-                }
-                return true;
-            case MotionEvent.ACTION_CANCEL:
-                dragCtl = null;
-                return true;
-            default:
-                return true;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Dialogos de configuracao
-    // ------------------------------------------------------------------
-    private interface OnValue {
-        void onValue(int v);
-    }
-
-    private String str(int id) {
-        return getContext().getString(id);
-    }
-
-    private LinearLayout newColumn(Context c) {
-        LinearLayout col = new LinearLayout(c);
-        col.setOrientation(LinearLayout.VERTICAL);
-        int p = Math.round(16 * density);
-        col.setPadding(p, p / 2, p, 0);
-        return col;
-    }
-
-    private void addSlider(LinearLayout parent, Context c, final int labelRes,
-                           final int min, int max, int value, final OnValue cb) {
-        final TextView tv = new TextView(c);
-        tv.setText(getContext().getString(labelRes, value));
-        tv.setPadding(0, Math.round(10 * density), 0, 0);
-        SeekBar sb = new SeekBar(c);
-        sb.setMax(max - min);
-        sb.setProgress(value - min);
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
-                int v = progress + min;
-                tv.setText(getContext().getString(labelRes, v));
-                if (fromUser) cb.onValue(v);
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar s) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar s) {
-            }
-        });
-        parent.addView(tv);
-        parent.addView(sb);
-    }
-
-    private void addSpinner(LinearLayout parent, Context c, int labelRes, String[] items,
-                            int selected, final OnValue cb) {
-        TextView tv = new TextView(c);
-        tv.setText(labelRes);
-        tv.setPadding(0, Math.round(10 * density), 0, 0);
-        Spinner spin = new Spinner(c);
-        ArrayAdapter<String> ad = new ArrayAdapter<String>(c, android.R.layout.simple_spinner_item, items);
-        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spin.setAdapter(ad);
-        spin.setSelection(Math.max(0, selected));
-        spin.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                cb.onValue(pos);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> p) {
-            }
-        });
-        parent.addView(tv);
-        parent.addView(spin);
-    }
-
-    private void showMainDialog() {
-        releaseAll();
-        AlertDialog.Builder b = new AlertDialog.Builder(getContext(),
-                android.R.style.Theme_DeviceDefault_Dialog_Alert);
-        Context dc = b.getContext();
-        ScrollView sv = new ScrollView(dc);
-        LinearLayout root = newColumn(dc);
-        sv.addView(root);
-
-        addSlider(root, dc, R.string.touch_opacity, 10, 100, Math.round(globalAlpha * 100f), new OnValue() {
-            @Override
-            public void onValue(int v) {
-                globalAlpha = v / 100f;
-                applyLayout();
-            }
-        });
-        addSlider(root, dc, R.string.touch_size, 50, 150, Math.round(globalScale * 100f), new OnValue() {
-            @Override
-            public void onValue(int v) {
-                globalScale = v / 100f;
-                applyLayout();
-            }
-        });
-        addSlider(root, dc, R.string.touch_tolerance, 0, 24, toleranceDp, new OnValue() {
-            @Override
-            public void onValue(int v) {
-                toleranceDp = v;
-            }
-        });
-
-        b.setTitle(R.string.touch_settings_title);
-        b.setView(sv);
-        b.setPositiveButton(R.string.touch_close, null);
-        b.setNeutralButton(R.string.touch_edit_layout, new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface d, int which) {
-                enterEditMode();
-            }
-        });
-        b.setNegativeButton(R.string.touch_reset, new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface d, int which) {
-                confirmResetAll();
-            }
-        });
-        b.setOnDismissListener(new DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(DialogInterface d) {
-                savePrefs();
-            }
-        });
-        b.show();
-    }
-
-    private void confirmResetAll() {
-        new AlertDialog.Builder(getContext(), android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setMessage(R.string.touch_reset_confirm)
-                .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
-                        resetAll();
-                    }
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    private String ctlLabel(Ctl c) {
-        if (c.type == TYPE_DPAD) return str(R.string.touch_ctl_dpad);
-        if (c.type == TYPE_ANALOG) return str(R.string.touch_ctl_analog);
-        return getContext().getString(R.string.touch_ctl_button, c.key.toUpperCase(Locale.ROOT));
-    }
-
-    private void showCtlDialog(final Ctl c) {
-        releaseAll();
-        AlertDialog.Builder b = new AlertDialog.Builder(getContext(),
-                android.R.style.Theme_DeviceDefault_Dialog_Alert);
-        Context dc = b.getContext();
-        ScrollView sv = new ScrollView(dc);
-        LinearLayout root = newColumn(dc);
-        sv.addView(root);
-
-        addSlider(root, dc, R.string.touch_size, 40, 250, Math.round(c.scale * 100f), new OnValue() {
-            @Override
-            public void onValue(int v) {
-                c.scale = v / 100f;
-                applyLayout();
-            }
-        });
-        addSlider(root, dc, R.string.touch_opacity, 10, 100, Math.round(c.alpha * 100f), new OnValue() {
-            @Override
-            public void onValue(int v) {
-                c.alpha = v / 100f;
-                applyLayout();
-            }
-        });
-
-        CheckBox cb = new CheckBox(dc);
-        cb.setText(R.string.touch_visible);
-        cb.setChecked(c.visible);
-        cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton button, boolean checked) {
-                c.visible = checked;
-                applyLayout();
-            }
-        });
-        root.addView(cb);
-
-        if (c.type == TYPE_BUTTON) {
-            addSpinner(root, dc, R.string.touch_sends, CODE_LABELS, indexOfCode(c.code), new OnValue() {
-                @Override
-                public void onValue(int pos) {
-                    c.code = CODES[pos];
-                }
-            });
-            String[] iconLabels = new String[ICON_LABEL_RES.length];
-            for (int i = 0; i < iconLabels.length; i++) {
-                iconLabels[i] = getContext().getString(ICON_LABEL_RES[i]);
-            }
-            addSpinner(root, dc, R.string.touch_icon, iconLabels, c.icon, new OnValue() {
-                @Override
-                public void onValue(int pos) {
-                    c.icon = pos;
-                    applyLayout();
-                }
-            });
-        }
-
-        b.setTitle(ctlLabel(c));
-        b.setView(sv);
-        b.setPositiveButton(android.R.string.ok, null);
-        b.setNegativeButton(R.string.touch_reset, new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface d, int which) {
-                resetCtl(c);
-                applyLayout();
-                savePrefs();
-            }
-        });
-        b.setOnDismissListener(new DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(DialogInterface d) {
-                savePrefs();
-            }
-        });
-        b.show();
-    }
-
     // ------------------------------------------------------------------
     // Inicializacao do gamepad virtual
     // ------------------------------------------------------------------
     public void initializeVirtualController() {
-        android.util.Log.i("ControllerOverlay", "DEBUG: initializing virtual joystick...");
+        android.util.Log.i("ControllerOverlay", "initializing virtual joystick...");
         virtualDeviceId = getPhysicalJoystickCount();
-        pointerStates.clear();
+        pointerCtl.clear();
         codeCounts.clear();
         hatX = 0;
         hatY = 0;
-        android.util.Log.i("ControllerOverlay", String.format("DEBUG: virtualDeviceID = %d", virtualDeviceId));
         SDLControllerManager.nativeRemoveJoystick(virtualDeviceId);
         ensureJoystickAlive();
-
-        View ls = analogCtl.view;
-        if (ls instanceof JoystickOverlay) {
-            ((JoystickOverlay) ls).setAttrs(virtualDeviceId, 0, 1);
-        }
-
         for (int i = 0; i < 6; i++) {
             SDLControllerManager.onNativeJoy(virtualDeviceId, i, 0.00390625f);
             SDLControllerManager.onNativeJoy(virtualDeviceId, i, 0.0f);
         }
         SDLControllerManager.onNativeHat(virtualDeviceId, 0, 0, 0);
-        android.util.Log.i("ControllerOverlay", "DEBUG: virtual joystick initialized!");
         isInitialized = true;
+        applyLayout();
     }
 
     private int ensureJoystickAlive() {

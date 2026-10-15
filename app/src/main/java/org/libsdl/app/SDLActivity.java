@@ -334,8 +334,10 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     private static String mBasePath;
     private Button mSDButton;
     private ControllerOverlay mControllerOverlay;
+    // Only the "select game folder" button fades away. The touch controls layer (mLayout) must NEVER
+    // be hidden, otherwise the controls vanish while the player is configuring them.
     private final Runnable hideRunnable = () -> {
-        if (mLayout != null) mLayout.setVisibility(View.INVISIBLE);
+        if (mSDButton != null) mSDButton.setVisibility(View.INVISIBLE);
     };
     private Handler mUIHandler = new Handler(android.os.Looper.getMainLooper());
 
@@ -1074,7 +1076,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      * @return if the message was handled in overridden method.
      */
     protected boolean onUnhandledMessage(int command, Object param) {
-        return false;
+        // Messages sent by the Ikemen engine (SDL_AndroidSendMessage, see src/touch.go)
+        final int value = (param instanceof Integer) ? (Integer) param : 0;
+        switch (command - COMMAND_USER) {
+            case 1: // 0 = menus, 1 = fight
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setMode(value == 1 ? ControllerOverlay.MODE_FIGHT : ControllerOverlay.MODE_MENU);
+                }
+                return true;
+            case 2: // open the touch controls editor
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.openEditor();
+                }
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**

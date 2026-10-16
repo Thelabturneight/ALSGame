@@ -346,8 +346,17 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         "external/script"
     };
 
-    // Uses folder selection logic if set to true. Set to false for full game scenarios.
-    private final boolean USE_FOLDER_SELECT = false;
+    // Folder selection mode. Comes from the R.bool.use_folder_select resource:
+    //  - debug build (beta):  true  -> "Select game folder" button, game files are read from that folder.
+    //  - release build:       false -> game files are bundled in the APK and extracted to internal storage.
+    // (Set in onCreate: resources are not available yet while fields are being initialized.)
+    private boolean USE_FOLDER_SELECT = false;
+
+    private static final int STORAGE_PERMISSION_CODE = 4321;
+    // True while the user is on the "All files access" settings screen.
+    private boolean mWaitingSettings = false;
+    // True once setupContent() has been started for this process.
+    private boolean mSetupStarted = false;
 
     // Setup
     @Override
@@ -365,6 +374,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         Log.v(TAG, "Model: " + Build.MODEL);
         Log.v(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
+
+        USE_FOLDER_SELECT = getResources().getBoolean(R.bool.use_folder_select);
 
         mSharedPrefs = this.getSharedPreferences(getString(R.string.prefs_key), MODE_PRIVATE);
 
@@ -472,12 +483,14 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                 ViewGroup.LayoutParams.WRAP_CONTENT
         );
         params.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
+        // Top-center: the top-right corner belongs to the touch-controls gear.
+        params.addRule(RelativeLayout.CENTER_HORIZONTAL);
 
         if (USE_FOLDER_SELECT) {
+            // Beta build: the button stays visible all the time (it no longer fades away after 5 s).
+            mSDButton.setAlpha(0.9f);
             mLayout.addView(mSDButton, params);
             mSDButton.setOnClickListener(v -> checkAndPickFolder());
-            mUIHandler.postDelayed(hideRunnable, 5000);
         }
 
         // Get our current screen orientation and pass it down.
@@ -524,11 +537,24 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             mBasePath = getFilesDir().getAbsolutePath();
         }
 
-        if (mBasePath.isEmpty()) {
+        if (mBasePath.isEmpty() || (USE_FOLDER_SELECT && !mBasePath.startsWith(getFilesDir().getAbsolutePath()) && !hasStorageAccess())) {
             checkAndPickFolder();
         } else {
             setupContent();
         }
+    }
+
+    // Direct file access to a folder chosen by the user needs "All files access" on Android 11+
+    // (or the legacy storage permission on older versions). Only used by the folder-select (beta) build.
+    private boolean hasStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return Environment.isExternalStorageManager();
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
     }
 
     @Override
@@ -549,7 +575,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                 }
             }
             mUIHandler.removeCallbacks(hideRunnable);
-            mUIHandler.postDelayed(hideRunnable, 5000);
+            // Folder-select build: touching the screen brings the (faded) button back for 5 s.
+            if (USE_FOLDER_SELECT && mSDButton != null) {
+                mSDButton.setVisibility(View.VISIBLE);
+            }
+            if (!USE_FOLDER_SELECT) {
+                mUIHandler.postDelayed(hideRunnable, 5000);
+            }
         }
         return super.dispatchTouchEvent(ev);
     }
@@ -558,6 +590,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 // Send user to Settings to grant "All Files Access"
+                mWaitingSettings = true; // onResume() continues the flow when the user comes back
                 try {
                     Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
                     intent.addCategory("android.intent.category.DEFAULT");
@@ -571,8 +604,12 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             } else {
                 openDirectoryPicker();
             }
-        } else {
+        } else if (Build.VERSION.SDK_INT >= 23 && !hasStorageAccess()) {
             // Legacy permissions (Read/Write External) for older Android
+            requestPermissions(new String[]{
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, STORAGE_PERMISSION_CODE);
+        } else {
             openDirectoryPicker();
         }
     }
@@ -606,7 +643,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == FOLDER_PICKER_CODE) {
-            boolean isFreshRun = (mBasePath == null);
+            // mBasePath is "" (not null) on the first run of the folder-select build.
+            boolean isFreshRun = (mBasePath == null || mBasePath.isEmpty());
             if (resultCode == RESULT_OK) {
                 if (data != null) {
                     Uri treeUri = data.getData();
@@ -687,14 +725,27 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
     }
 
+    // Folder-select build: the user's own folder is the source of truth. Bundled engine files are only
+    // copied into it when it does not look like a game folder yet (no "data" folder), and never overwrite.
+    private boolean folderNeedsSeed(File baseDir) {
+        return !new File(baseDir, "data").isDirectory();
+    }
+
     private void setupContent() {
+        mSetupStarted = true;
         File baseDir = new File(mBasePath);
+        if (USE_FOLDER_SELECT) {
+            Toast.makeText(this, "BETA - " + mBasePath, Toast.LENGTH_LONG).show();
+        }
+        final boolean seedOnly = USE_FOLDER_SELECT;
 
         // Run the comparison in the background
         new Thread(() -> {
             final long apkStamp = getApkStamp();
-            boolean updateRequired = filesNeedUpdate(baseDir, UPDATE_FILE_CHECK_DIRS)
-                    || mSharedPrefs.getLong(KEY_EXTRACTED_STAMP, -1L) != apkStamp;
+            boolean updateRequired = seedOnly
+                    ? folderNeedsSeed(baseDir)
+                    : (filesNeedUpdate(baseDir, UPDATE_FILE_CHECK_DIRS)
+                        || mSharedPrefs.getLong(KEY_EXTRACTED_STAMP, -1L) != apkStamp);
 
             if (!updateRequired) {
                 Log.i("SDLActivity", "Scripts match APK. Skipping extraction.");
@@ -713,7 +764,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     // Start actual extraction thread
                     new Thread(() -> {
                         try {
-                            AssetExtractor.extractAll(getAssets(), baseDir);
+                            AssetExtractor.extractAll(getAssets(), baseDir, !seedOnly);
                             mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
                             runOnUiThread(() -> {
                                 progress.dismiss();
@@ -790,13 +841,15 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         super.onResume();
 
         // If we were waiting for the "All Files Access" permission...
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Permission is now granted?
-            if (Environment.isExternalStorageManager()) {
-                // If mBasePath is still empty, let's open the picker now.
-                if (mBasePath == null || mBasePath.isEmpty()) {
-                    openDirectoryPicker();
-                }
+        if (USE_FOLDER_SELECT && mWaitingSettings && !mSetupStarted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && Environment.isExternalStorageManager()) {
+            mWaitingSettings = false;
+            if (mBasePath == null || mBasePath.isEmpty()) {
+                // Permission is now granted: open the picker.
+                openDirectoryPicker();
+            } else {
+                // Folder was already chosen in a previous run; only the permission was missing.
+                setupContent();
             }
         }
 
@@ -2149,6 +2202,21 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         boolean result = (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED);
+        if (requestCode == STORAGE_PERMISSION_CODE) {
+            // Legacy storage permission (Android 10 and older) for the folder-select build.
+            if (result) {
+                if (mBasePath == null || mBasePath.isEmpty()) {
+                    openDirectoryPicker();
+                } else {
+                    setupContent();
+                }
+            } else {
+                // Denied: fall back to the app-private folder so the game still starts.
+                mBasePath = getFilesDir().getAbsolutePath();
+                setupContent();
+            }
+            return;
+        }
         nativePermissionResult(requestCode, result);
     }
 

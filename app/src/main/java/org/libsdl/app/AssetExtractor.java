@@ -34,6 +34,12 @@ public class AssetExtractor {
 
     // Extract all assets in assets/ into baseDir
     public static void extractAll(AssetManager assets, File targetDir) throws IOException {
+        extractAll(assets, targetDir, true);
+    }
+
+    // overwrite=false: files that already exist in targetDir are kept (used by the folder-select build,
+    // where the user's own folder must never be overwritten by the bundled copy).
+    public static void extractAll(AssetManager assets, File targetDir, boolean overwrite) throws IOException {
         Log.i("AssetExtractor", "Attempting to open manifest.txt...");
         InputStream manifestStream = null;
         try {
@@ -74,6 +80,8 @@ public class AssetExtractor {
             if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
                 Log.e("AssetExtractor", "Failed to create parent dir: " + parentDir.getAbsolutePath());
             }
+
+            if (!overwrite && outFile.exists()) continue;
 
             // Listed in manifest.txt but absent from the APK: not a write failure, just skip (original behavior).
             InputStream in;

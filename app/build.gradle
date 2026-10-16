@@ -44,12 +44,15 @@ android {
         assets.srcDirs = ['src/main/assets']
     }
     buildTypes {
-        // Debug = BETA: "Select game folder" button, reads the game files from a folder chosen by the user.
-        // (see src/debug/ : bools.xml, strings.xml, AndroidManifest.xml). Different applicationId so it can be
-        // installed next to the release build (their signing keys differ).
-        debug {
+        // BETA (./gradlew assembleBeta): "Select game folder" button, reads the game files from a folder chosen
+        // by the user (see src/beta/ : bools.xml, strings.xml, AndroidManifest.xml).
+        // debug and release are NOT affected: they keep the game files bundled in the APK.
+        // Different applicationId so it can be installed next to the normal APK.
+        beta {
+            initWith debug
             applicationIdSuffix ".beta"
             versionNameSuffix "-beta"
+            matchingFallbacks = ['debug']
         }
         // Release = unchanged: game files bundled in the APK.
         release {

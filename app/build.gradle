@@ -44,6 +44,14 @@ android {
         assets.srcDirs = ['src/main/assets']
     }
     buildTypes {
+        // Debug = BETA: "Select game folder" button, reads the game files from a folder chosen by the user.
+        // (see src/debug/ : bools.xml, strings.xml, AndroidManifest.xml). Different applicationId so it can be
+        // installed next to the release build (their signing keys differ).
+        debug {
+            applicationIdSuffix ".beta"
+            versionNameSuffix "-beta"
+        }
+        // Release = unchanged: game files bundled in the APK.
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

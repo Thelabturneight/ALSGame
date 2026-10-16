@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Release build: game files are bundled in the APK and extracted to internal storage. -->
+    <bool name="use_folder_select">false</bool>
+</resources>

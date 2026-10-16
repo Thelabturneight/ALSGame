@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Debug (beta) build: shows the "Select game folder" button and reads the game files from that folder. -->
-    <bool name="use_folder_select">true</bool>
-</resources>

@@ -2,4 +2,7 @@
 <resources>
     <!-- Release build: game files are bundled in the APK and extracted to internal storage. -->
     <bool name="use_folder_select">false</bool>
+    <!-- Shows the previous run's log when the app starts (diagnostic). Keep true for working/preview/beta builds;
+         the "final_build" option of the CI workflow sets it to false. -->
+    <bool name="show_log_viewer">true</bool>
 </resources>

@@ -1147,6 +1147,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     mControllerOverlay.setTagMode(value == 1);
                 }
                 return true;
+            case 5: // 0 = analog stick, 1 = D-pad
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setDirType(value == 1);
+                }
+                return true;
             case 3: // 0 = hide Back button (root menu), 1 = show
                 if (mControllerOverlay != null) {
                     mControllerOverlay.setBackVisible(value == 1);

@@ -41,9 +41,9 @@ import java.util.Map;
  *  - MENU: so aparece o botao "Voltar"; o resto da tela e repassado ao jogo como toque
  *          (o engine converte em selecao/confirmacao nos menus e na selecao de personagem).
  *  - LUTA: analogico + botoes A B C X Y Z, Start e Menu.
- *  - EDITOR: aberto por "Opcoes > Controles de Toque". Os controles ficam SEMPRE visiveis
- *          (nada de auto-ocultar). Cada controle tem sua propria configuracao
- *          (posicao, tamanho, opacidade, tecla e visibilidade).
+ *  - EDITOR: aberto por "Configuracoes > Controle > Mapeamento". Os controles ficam SEMPRE visiveis.
+ *          So da para arrastar cada controle para a posicao desejada (salva automaticamente).
+ *          Tamanho e opacidade sao fixos (opacidade padrao 30%).
  */
 public class ControllerOverlay extends RelativeLayout {
     public static final int MODE_MENU = 0;
@@ -59,6 +59,9 @@ public class ControllerOverlay extends RelativeLayout {
     private static final int TYPE_ANALOG = 1;
 
     private static final String PREFS_NAME = "ikemen_touch_layout_v3";
+    private static final String KEY_DPAD = "dirtype_dpad_v2"; // padrao: D-pad
+    private static final float DEFAULT_ALPHA = 0.30f; // opacidade padrao de todos os controles
+    private static final long DODGE_RELEASE_MS = 50L;  // tempo "solto" entre os dois toques da esquiva
 
     // Desenhos (res/drawable-nodpi). Cada PNG de botao e 256x256 com o anel de 248 px de diametro;
     // a base do analogico e 512x512 com anel de 504 px; a alavanca (anel do meio + bolinha) e 256x256.
@@ -79,6 +82,9 @@ public class ControllerOverlay extends RelativeLayout {
     // Positivo = para dentro da tela (esquerda), longe do canto; negativo = para o canto.
     private static final float ATTACK_SHIFT_DP = 24f;
 
+    // Altura (centro) do botao Menu, em dp; D e W (Tag) usam a mesma para ficarem alinhados com ele
+    private static final float MENU_CY_DP = 34f;
+
     private static class Ctl {
         final String key;
         final String title;
@@ -88,7 +94,7 @@ public class ControllerOverlay extends RelativeLayout {
 
         boolean visible = true;
         float scale = 1f;
-        float alpha = 0.8f;
+        float alpha = DEFAULT_ALPHA;
         int code;
         float fx = -1f, fy = -1f; // centro, em fracao da tela; <0 = padrao
         float cx, cy;             // centro atual em px
@@ -121,6 +127,11 @@ public class ControllerOverlay extends RelativeLayout {
     private boolean isInitialized = false;
     private int hatX = 0, hatY = 0;
     private int analogPointer = -1;
+    private boolean dpadMode = true;    // true = D-pad (padrao), false = analogico
+    private int wantX = 0, wantY = 0;   // direcao que o dedo esta pedindo (pode diferir do hat durante a esquiva)
+    private boolean dodging = false;    // esquiva em andamento (segura o hat neutro por alguns ms)
+    private final android.os.Handler uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final android.graphics.Path dpadClip = new android.graphics.Path();
     private float thumbDx = 0f, thumbDy = 0f;
 
     private int mode = MODE_MENU;
@@ -142,18 +153,11 @@ public class ControllerOverlay extends RelativeLayout {
 
     // Desenhos dos botoes
     private final Map<Integer, Bitmap> codeBitmaps = new HashMap<>(); // tecla -> desenho
-    private Bitmap analogBase, analogRing, analogDot, backBitmap;
+    private Bitmap analogBase, analogRing, analogDot, backBitmap, dpadBitmap, dpadFillBitmap;
 
     // Painel do editor
     private LinearLayout panel;
     private TextView panelTitle;
-    private SeekBar sizeBar, alphaBar;
-    private TextView sizeLabel, alphaLabel;
-    private Spinner keySpinner;
-    private CheckBox visibleBox;
-    private LinearLayout keyRow;
-    private boolean updatingPanel = false;
-    private boolean userPickedKey = false; // only a real tap on the spinner may change a control's key
 
     // ------------------------------------------------------------------
     // Joystick fisico (inalterado)
@@ -262,6 +266,8 @@ public class ControllerOverlay extends RelativeLayout {
         analogRing = loadBmp(context, R.drawable.touch_analog_ring);
         analogDot = loadBmp(context, R.drawable.touch_analog_dot);
         backBitmap = loadBmp(context, R.drawable.touch_back);
+        dpadBitmap = loadBmp(context, R.drawable.touch_dpad);
+        dpadFillBitmap = loadBmp(context, R.drawable.touch_dpad_fill);
     }
 
     // ------------------------------------------------------------------
@@ -280,7 +286,7 @@ public class ControllerOverlay extends RelativeLayout {
         float cy = H - marginB - r - bs / 2f;
         // X e Z ficam separados da roda, subindo pela lateral direita (X acima do Y, Z acima do X)
         float xX = cx + r + 6f * d;
-        float xY = cy - r - 52f * d;
+        float xY = cy - r - 68f * d; // X/Z um pouco mais acima (distancia parecida com a do Start)
         float zX = xX + 12f * d;
         float zY = Math.max(xY - 64f * d, 6f * d + 24f * d);
         switch (c.key) {
@@ -293,10 +299,11 @@ public class ControllerOverlay extends RelativeLayout {
             case "x":      return new float[]{xX, xY};
             case "z":      return new float[]{zX, zY};
             // Troca de personagem (Tag): fileira no canto superior direito, W no canto e D ao lado
-            case "w":      return new float[]{W - 14f * d - 16f * d, 12f * d + 16f * d};
-            case "d":      return new float[]{W - 14f * d - 16f * d - 46f * d, 12f * d + 16f * d};
+            // (mesma altura do centro do botao Menu: ficam alinhados em linha reta com ele)
+            case "w":      return new float[]{W - 14f * d - 16f * d, MENU_CY_DP * d};
+            case "d":      return new float[]{W - 14f * d - 16f * d - 46f * d, MENU_CY_DP * d};
             // Menu: cantinho superior esquerdo, fora do caminho
-            case "menu":   return new float[]{16f * d + 20f * d, 14f * d + 20f * d};
+            case "menu":   return new float[]{16f * d + 20f * d, MENU_CY_DP * d};
             // Start: embaixo, ao lado esquerdo da roda
             case "start":  return new float[]{cx - r - bs / 2f - 50f * d, H - marginB - 24f * d};
             default:       return new float[]{W / 2f, H / 2f};
@@ -329,12 +336,14 @@ public class ControllerOverlay extends RelativeLayout {
     // Preferencias (cada controle tem o seu proprio conjunto)
     // ------------------------------------------------------------------
     private void loadPrefs() {
+        dpadMode = sp.getBoolean(KEY_DPAD, true);
         for (Ctl c : ctls) {
             String k = c.key + ".";
-            c.visible = sp.getBoolean(k + "visible", true);
-            c.scale = sp.getFloat(k + "scale", 1f);
-            c.alpha = sp.getFloat(k + "alpha", 0.8f);
-            c.code = sp.getInt(k + "code", c.defCode);
+            // Tamanho, opacidade, visibilidade e tecla nao sao mais editaveis: sempre o padrao.
+            c.visible = true;
+            c.scale = 1f;
+            c.alpha = DEFAULT_ALPHA;
+            c.code = c.defCode;
             c.fx = sp.getFloat(k + "fx", -1f);
             c.fy = sp.getFloat(k + "fy", -1f);
         }
@@ -344,23 +353,33 @@ public class ControllerOverlay extends RelativeLayout {
         SharedPreferences.Editor e = sp.edit();
         for (Ctl c : ctls) {
             String k = c.key + ".";
-            e.putBoolean(k + "visible", c.visible);
-            e.putFloat(k + "scale", c.scale);
-            e.putFloat(k + "alpha", c.alpha);
-            e.putInt(k + "code", c.code);
             e.putFloat(k + "fx", c.fx);
             e.putFloat(k + "fy", c.fy);
         }
+        e.putBoolean(KEY_DPAD, dpadMode);
         e.apply();
     }
 
     private void resetCtl(Ctl c) {
         c.visible = true;
         c.scale = 1f;
-        c.alpha = 0.8f;
+        c.alpha = DEFAULT_ALPHA;
         c.code = c.defCode;
         c.fx = -1f;
         c.fy = -1f;
+    }
+
+    /** Tipo de direcional (vindo do engine): false = analogico, true = D-pad. Salvo automaticamente. */
+    public void setDirType(boolean dpad) {
+        if (dpadMode == dpad) return;
+        uiHandler.post(new Runnable() {
+            @Override public void run() {
+                releaseAll();
+            }
+        });
+        dpadMode = dpad;
+        savePrefs();
+        postInvalidate();
     }
 
     // ------------------------------------------------------------------
@@ -394,7 +413,9 @@ public class ControllerOverlay extends RelativeLayout {
     private void drawCtl(Canvas canvas, Ctl c, boolean editing) {
         float r = c.radius(density);
         float a = c.visible ? c.alpha : 0.25f; // oculto: so aparece "fantasma" no editor
-        if (c.type == TYPE_ANALOG) {
+        if (c.type == TYPE_ANALOG && dpadMode) {
+            drawDpad(canvas, c, r, a, editing);
+        } else if (c.type == TYPE_ANALOG) {
             // fixos: base (anel externo + setas) e anel interno; so a bolinha segue o dedo
             float stickSize = 2f * r * STICK_RATIO * STICK_CANVAS;
             drawBmp(canvas, analogBase, c.cx, c.cy, 2f * r * BASE_CANVAS, a);
@@ -411,6 +432,48 @@ public class ControllerOverlay extends RelativeLayout {
         }
     }
 
+    // D-pad: mesma estetica do analogico (contorno + setas, cinza claro). Os desenhos tem a mesma
+    // moldura 512x512 da base do analogico; a direcao pressionada "acende" (versao preenchida, recortada).
+    private static final float DPAD_ARM_HALF = 54f;  // meia largura do braco (px do PNG de 512)
+    private static final float DPAD_REACH = 218f;    // alcance do braco / peca diagonal
+
+    // Ponta do D-pad apontando para (ox, oy): pentagono limitado pelas diagonais do "X" central
+    private void addDpadArm(float cx, float cy, float ox, float oy, float w, float l) {
+        float px = -oy, py = ox; // perpendicular
+        float[][] pts = {{l, -w}, {l, w}, {w, w}, {0f, 0f}, {w, -w}}; // (ao longo, de lado)
+        for (int i = 0; i < pts.length; i++) {
+            float X = cx + ox * pts[i][0] + px * pts[i][1];
+            float Y = cy + oy * pts[i][0] + py * pts[i][1];
+            if (i == 0) dpadClip.moveTo(X, Y); else dpadClip.lineTo(X, Y);
+        }
+        dpadClip.close();
+    }
+
+    private void drawDpad(Canvas canvas, Ctl c, float r, float a, boolean editing) {
+        float size = 2f * r * BASE_CANVAS;
+        drawBmp(canvas, dpadBitmap, c.cx, c.cy, size, a);
+        if (editing || analogPointer == -1 || (hatX == 0 && hatY == 0)) return;
+        float k = size / 512f;
+        float w = DPAD_ARM_HALF * k, l = DPAD_REACH * k;
+        float x = c.cx, y = c.cy;
+        dpadClip.reset();
+        // cada ponta e separada das outras pelo "X": area da ponta = ate a linha diagonal do meio
+        if (hatY < 0) addDpadArm(x, y, 0f, -1f, w, l);
+        if (hatY > 0) addDpadArm(x, y, 0f, 1f, w, l);
+        if (hatX < 0) addDpadArm(x, y, -1f, 0f, w, l);
+        if (hatX > 0) addDpadArm(x, y, 1f, 0f, w, l);
+        if (hatX != 0 && hatY != 0) { // diagonal: acende tambem a peca solta daquele canto
+            float gap = 8f * k;
+            float x0 = hatX > 0 ? x + w + gap : x - l, x1 = hatX > 0 ? x + l : x - w - gap;
+            float y0 = hatY > 0 ? y + w + gap : y - l, y1 = hatY > 0 ? y + l : y - w - gap;
+            dpadClip.addRect(x0, y0, x1, y1, android.graphics.Path.Direction.CW);
+        }
+        canvas.save();
+        canvas.clipPath(dpadClip);
+        drawBmp(canvas, dpadFillBitmap, x, y, size, a);
+        canvas.restore();
+    }
+
     // Botao "Voltar" mostrado nos menus: cancelar / voltar (circulo com a seta)
     private RectF backRect() {
         float d = density;
@@ -423,7 +486,7 @@ public class ControllerOverlay extends RelativeLayout {
             fillPaint.setColor(Color.argb(70, 255, 255, 255));
             canvas.drawCircle(r.centerX(), r.centerY(), r.width() / 2f, fillPaint);
         }
-        drawBmp(canvas, backBitmap, r.centerX(), r.centerY(), r.width() * BTN_CANVAS, 0.9f);
+        drawBmp(canvas, backBitmap, r.centerX(), r.centerY(), r.width() * BTN_CANVAS, DEFAULT_ALPHA);
     }
 
     // ------------------------------------------------------------------
@@ -544,111 +607,16 @@ public class ControllerOverlay extends RelativeLayout {
 
         panelTitle = new TextView(context);
         panelTitle.setTextColor(Color.WHITE);
-        panelTitle.setTextSize(16f);
+        panelTitle.setTextSize(15f);
         panelTitle.setTypeface(Typeface.DEFAULT_BOLD);
         panelTitle.setGravity(Gravity.CENTER);
+        panelTitle.setText("Arraste os controles para mapear a posicao");
         panel.addView(panelTitle);
-
-        sizeLabel = new TextView(context);
-        sizeLabel.setTextColor(Color.LTGRAY);
-        panel.addView(sizeLabel);
-        sizeBar = new SeekBar(context);
-        sizeBar.setMax(150); // 50% .. 200%
-        sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
-                if (updatingPanel || selected == null) return;
-                selected.scale = (50 + p) / 100f;
-                sizeLabel.setText("Tamanho: " + (50 + p) + "%");
-                invalidate();
-            }
-            @Override public void onStartTrackingTouch(SeekBar s) {}
-            @Override public void onStopTrackingTouch(SeekBar s) { savePrefs(); }
-        });
-        panel.addView(sizeBar);
-
-        alphaLabel = new TextView(context);
-        alphaLabel.setTextColor(Color.LTGRAY);
-        panel.addView(alphaLabel);
-        alphaBar = new SeekBar(context);
-        alphaBar.setMax(80); // 20% .. 100%
-        alphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
-                if (updatingPanel || selected == null) return;
-                selected.alpha = (20 + p) / 100f;
-                alphaLabel.setText("Opacidade: " + (20 + p) + "%");
-                invalidate();
-            }
-            @Override public void onStartTrackingTouch(SeekBar s) {}
-            @Override public void onStopTrackingTouch(SeekBar s) { savePrefs(); }
-        });
-        panel.addView(alphaBar);
-
-        keyRow = new LinearLayout(context);
-        keyRow.setOrientation(LinearLayout.HORIZONTAL);
-        keyRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView keyLabel = new TextView(context);
-        keyLabel.setTextColor(Color.LTGRAY);
-        keyLabel.setText("Tecla: ");
-        keyRow.addView(keyLabel);
-        keySpinner = new Spinner(context);
-        ArrayAdapter<String> ad = new ArrayAdapter<>(context, android.R.layout.simple_spinner_item, CODE_NAMES);
-        ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        keySpinner.setAdapter(ad);
-        keySpinner.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent e) {
-                if (e.getActionMasked() == MotionEvent.ACTION_DOWN) userPickedKey = true;
-                return false;
-            }
-        });
-        keySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
-                // Spinner callbacks are deferred, so programmatic setSelection() would otherwise
-                // overwrite the key of whichever control is selected at that moment.
-                if (updatingPanel || !userPickedKey || selected == null || selected.type != TYPE_BUTTON) return;
-                userPickedKey = false;
-                selected.code = CODES[pos];
-                savePrefs();
-                invalidate();
-            }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
-        keyRow.addView(keySpinner);
-        panel.addView(keyRow);
-
-        visibleBox = new CheckBox(context);
-        visibleBox.setText("Mostrar no jogo");
-        visibleBox.setTextColor(Color.WHITE);
-        visibleBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton b, boolean checked) {
-                if (updatingPanel || selected == null) return;
-                selected.visible = checked;
-                savePrefs();
-                invalidate();
-            }
-        });
-        panel.addView(visibleBox);
 
         LinearLayout buttons = new LinearLayout(context);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        Button resetOne = new Button(context);
-        resetOne.setText("Restaurar este");
-        resetOne.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (selected == null) return;
-                resetCtl(selected);
-                applyLayout();
-                updatePanel();
-                savePrefs();
-            }
-        });
         Button resetAll = new Button(context);
-        resetAll.setText("Restaurar tudo");
+        resetAll.setText("Restaurar padrao");
         resetAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -664,7 +632,6 @@ public class ControllerOverlay extends RelativeLayout {
             }
         });
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        buttons.addView(resetOne, bp);
         buttons.addView(resetAll, bp);
         buttons.addView(done, bp);
         panel.addView(buttons);
@@ -678,13 +645,12 @@ public class ControllerOverlay extends RelativeLayout {
 
     private void confirmResetAll() {
         AlertDialog.Builder b = new AlertDialog.Builder(getContext());
-        b.setMessage("Restaurar todos os controles para o padrao?");
+        b.setMessage("Restaurar a posicao de todos os controles para o padrao?");
         b.setPositiveButton("Restaurar", new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface d, int which) {
                 for (Ctl c : ctls) resetCtl(c);
                 applyLayout();
-                updatePanel();
                 savePrefs();
             }
         });
@@ -692,39 +658,7 @@ public class ControllerOverlay extends RelativeLayout {
         b.show();
     }
 
-    private void updatePanel() {
-        updatingPanel = true;
-        userPickedKey = false;
-        if (selected == null) {
-            panelTitle.setText("Toque num controle para editar");
-            sizeBar.setEnabled(false);
-            alphaBar.setEnabled(false);
-            visibleBox.setEnabled(false);
-            keySpinner.setEnabled(false);
-            sizeLabel.setText("Tamanho");
-            alphaLabel.setText("Opacidade");
-            keyRow.setVisibility(View.VISIBLE);
-        } else {
-            panelTitle.setText(selected.title);
-            sizeBar.setEnabled(true);
-            alphaBar.setEnabled(true);
-            visibleBox.setEnabled(true);
-            sizeBar.setProgress(Math.round(selected.scale * 100f) - 50);
-            alphaBar.setProgress(Math.round(selected.alpha * 100f) - 20);
-            sizeLabel.setText("Tamanho: " + Math.round(selected.scale * 100f) + "%");
-            alphaLabel.setText("Opacidade: " + Math.round(selected.alpha * 100f) + "%");
-            visibleBox.setChecked(selected.visible);
-            boolean isBtn = selected.type == TYPE_BUTTON;
-            keyRow.setVisibility(isBtn ? View.VISIBLE : View.GONE);
-            keySpinner.setEnabled(isBtn);
-            if (isBtn) {
-                for (int i = 0; i < CODES.length; i++) {
-                    if (CODES[i] == selected.code) keySpinner.setSelection(i);
-                }
-            }
-        }
-        updatingPanel = false;
-    }
+    private void updatePanel() { }
 
     // ------------------------------------------------------------------
     // Toque
@@ -801,7 +735,11 @@ public class ControllerOverlay extends RelativeLayout {
             } else if (hit != null) {
                 pointerCtl.put(pId, hit);
                 hit.pressed = true;
-                handleCode(hit.code, true);
+                if ("y".equals(hit.key)) {
+                    dodge(); // Y = esquiva (nao envia o botao Y do jogo)
+                } else {
+                    handleCode(hit.code, true);
+                }
             }
         } else if (action == MotionEvent.ACTION_MOVE) {
             for (int i = 0; i < event.getPointerCount(); i++) {
@@ -849,6 +787,7 @@ public class ControllerOverlay extends RelativeLayout {
             analogPointer = -1;
             thumbDx = 0f;
             thumbDy = 0f;
+            wantX = 0; wantY = 0;
             setHat(0, 0);
         }
         Ctl c = pointerCtl.remove(pId);
@@ -867,7 +806,9 @@ public class ControllerOverlay extends RelativeLayout {
             backPointer = -1;
         }
         codeCounts.clear();
-        setHat(0, 0);
+        dodging = false;
+        wantX = 0; wantY = 0;
+        setHatForce(0, 0);
         for (Ctl c : ctls) c.pressed = false;
         invalidate();
     }
@@ -880,6 +821,7 @@ public class ControllerOverlay extends RelativeLayout {
         if (outside) {
             thumbDx = 0f;
             thumbDy = 0f;
+            wantX = 0; wantY = 0;
             setHat(0, 0);
             return;
         }
@@ -901,15 +843,48 @@ public class ControllerOverlay extends RelativeLayout {
             if (ux > 0.38f) nx = 1; else if (ux < -0.38f) nx = -1;
             if (uy > 0.38f) ny = 1; else if (uy < -0.38f) ny = -1;
         }
+        if (dpadMode) { // no D-pad a "bolinha" nao segue o dedo
+            thumbDx = 0f;
+            thumbDy = 0f;
+        }
+        wantX = nx; wantY = ny;
         setHat(nx, ny);
     }
 
     private void setHat(int nx, int ny) {
+        if (dodging) return; // durante a esquiva o hat e controlado por dodge()
+        setHatForce(nx, ny);
+    }
+
+    private void setHatForce(int nx, int ny) {
         if (nx == hatX && ny == hatY) return;
         if (!isInitialized) return;
         hatX = nx;
         hatY = ny;
         SDLControllerManager.onNativeHat(virtualDeviceId, 0, hatX, hatY);
+    }
+
+    /**
+     * Esquiva: detecta a direcao horizontal em que o jogador esta andando e simula o duplo toque rapido
+     * nessa direcao (solta a direcao por alguns ms e aperta de novo), igual a apertar duas vezes seguidas.
+     * Sem direcao pressionada, nao faz nada.
+     */
+    private void dodge() {
+        if (!isInitialized || dodging || hatX == 0) return;
+        final int dir = hatX;
+        final int keepY = hatY;
+        dodging = true;
+        setHatForce(0, keepY);
+        uiHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                dodging = false;
+                // reaperta na mesma direcao se o dedo ainda esta segurando (ou na que ele estiver pedindo agora)
+                int nx = (analogPointer != -1) ? (wantX != 0 ? wantX : dir) : 0;
+                int ny = (analogPointer != -1) ? wantY : 0;
+                setHatForce(nx, ny);
+            }
+        }, DODGE_RELEASE_MS);
     }
 
     /** Pressiona/solta uma tecla; dois controles com a mesma tecla nao se atrapalham. */

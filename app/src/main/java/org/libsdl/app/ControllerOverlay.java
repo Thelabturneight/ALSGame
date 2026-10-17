@@ -61,7 +61,6 @@ public class ControllerOverlay extends RelativeLayout {
     private static final String PREFS_NAME = "ikemen_touch_layout_v3";
     private static final String KEY_DPAD = "dirtype_dpad_v2"; // padrao: D-pad
     private static final float DEFAULT_ALPHA = 0.30f; // opacidade padrao de todos os controles
-    private static final long DODGE_RELEASE_MS = 50L;  // tempo "solto" entre os dois toques da esquiva
 
     // Desenhos (res/drawable-nodpi). Cada PNG de botao e 256x256 com o anel de 248 px de diametro;
     // a base do analogico e 512x512 com anel de 504 px; a alavanca (anel do meio + bolinha) e 256x256.
@@ -128,8 +127,6 @@ public class ControllerOverlay extends RelativeLayout {
     private int hatX = 0, hatY = 0;
     private int analogPointer = -1;
     private boolean dpadMode = true;    // true = D-pad (padrao), false = analogico
-    private int wantX = 0, wantY = 0;   // direcao que o dedo esta pedindo (pode diferir do hat durante a esquiva)
-    private boolean dodging = false;    // esquiva em andamento (segura o hat neutro por alguns ms)
     private final android.os.Handler uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final android.graphics.Path dpadClip = new android.graphics.Path();
     private float thumbDx = 0f, thumbDy = 0f;
@@ -278,13 +275,14 @@ public class ControllerOverlay extends RelativeLayout {
         float bs = 64f * d;
         float marginR = 30f * d, marginB = 26f * d;
         // "Roda" de 4 botoes no canto inferior direito, em losango:
-        //        C
-        //     B     Y
+        //        X
+        //     B     C
         //        A
+        // Acima da roda, subindo pela lateral direita: Y (embaixo) e Z (em cima)
         float r = 52f * d;
         float cx = W - marginR - r - bs / 2f - ATTACK_SHIFT_DP * d;
         float cy = H - marginB - r - bs / 2f;
-        // X e Z ficam separados da roda, subindo pela lateral direita (X acima do Y, Z acima do X)
+        // Y e Z ficam separados da roda, subindo pela lateral direita (Y acima da roda, Z acima do Y)
         float xX = cx + r + 6f * d;
         float xY = cy - r - 68f * d; // X/Z um pouco mais acima (distancia parecida com a do Start)
         float zX = xX + 12f * d;
@@ -292,11 +290,11 @@ public class ControllerOverlay extends RelativeLayout {
         switch (c.key) {
             // Analogico na esquerda, afastado da borda para o dedo nao sair da tela ao puxar pra esquerda
             case "analog": return new float[]{ANALOG_LEFT_DP * d + 75f * d, H - marginB - 75f * d};
-            case "c":      return new float[]{cx, cy - r};
+            case "x":      return new float[]{cx, cy - r};
             case "b":      return new float[]{cx - r, cy};
-            case "y":      return new float[]{cx + r, cy};
+            case "c":      return new float[]{cx + r, cy};
             case "a":      return new float[]{cx, cy + r};
-            case "x":      return new float[]{xX, xY};
+            case "y":      return new float[]{xX, xY};
             case "z":      return new float[]{zX, zY};
             // Troca de personagem (Tag): fileira no canto superior direito, W no canto e D ao lado
             // (mesma altura do centro do botao Menu: ficam alinhados em linha reta com ele)
@@ -735,11 +733,7 @@ public class ControllerOverlay extends RelativeLayout {
             } else if (hit != null) {
                 pointerCtl.put(pId, hit);
                 hit.pressed = true;
-                if ("y".equals(hit.key)) {
-                    dodge(); // Y = esquiva (nao envia o botao Y do jogo)
-                } else {
-                    handleCode(hit.code, true);
-                }
+                handleCode(hit.code, true);
             }
         } else if (action == MotionEvent.ACTION_MOVE) {
             for (int i = 0; i < event.getPointerCount(); i++) {
@@ -787,7 +781,6 @@ public class ControllerOverlay extends RelativeLayout {
             analogPointer = -1;
             thumbDx = 0f;
             thumbDy = 0f;
-            wantX = 0; wantY = 0;
             setHat(0, 0);
         }
         Ctl c = pointerCtl.remove(pId);
@@ -806,8 +799,6 @@ public class ControllerOverlay extends RelativeLayout {
             backPointer = -1;
         }
         codeCounts.clear();
-        dodging = false;
-        wantX = 0; wantY = 0;
         setHatForce(0, 0);
         for (Ctl c : ctls) c.pressed = false;
         invalidate();
@@ -821,7 +812,6 @@ public class ControllerOverlay extends RelativeLayout {
         if (outside) {
             thumbDx = 0f;
             thumbDy = 0f;
-            wantX = 0; wantY = 0;
             setHat(0, 0);
             return;
         }
@@ -847,12 +837,10 @@ public class ControllerOverlay extends RelativeLayout {
             thumbDx = 0f;
             thumbDy = 0f;
         }
-        wantX = nx; wantY = ny;
         setHat(nx, ny);
     }
 
     private void setHat(int nx, int ny) {
-        if (dodging) return; // durante a esquiva o hat e controlado por dodge()
         setHatForce(nx, ny);
     }
 
@@ -862,29 +850,6 @@ public class ControllerOverlay extends RelativeLayout {
         hatX = nx;
         hatY = ny;
         SDLControllerManager.onNativeHat(virtualDeviceId, 0, hatX, hatY);
-    }
-
-    /**
-     * Esquiva: detecta a direcao horizontal em que o jogador esta andando e simula o duplo toque rapido
-     * nessa direcao (solta a direcao por alguns ms e aperta de novo), igual a apertar duas vezes seguidas.
-     * Sem direcao pressionada, nao faz nada.
-     */
-    private void dodge() {
-        if (!isInitialized || dodging || hatX == 0) return;
-        final int dir = hatX;
-        final int keepY = hatY;
-        dodging = true;
-        setHatForce(0, keepY);
-        uiHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                dodging = false;
-                // reaperta na mesma direcao se o dedo ainda esta segurando (ou na que ele estiver pedindo agora)
-                int nx = (analogPointer != -1) ? (wantX != 0 ? wantX : dir) : 0;
-                int ny = (analogPointer != -1) ? wantY : 0;
-                setHatForce(nx, ny);
-            }
-        }, DODGE_RELEASE_MS);
     }
 
     /** Pressiona/solta uma tecla; dois controles com a mesma tecla nao se atrapalham. */

@@ -77,6 +77,11 @@ public class ControllerOverlay extends RelativeLayout {
     private static final float DOT_RADIUS_PX = 77f;
     private static final float THUMB_TRAVEL_IN_STICK = (RING_OUTER_PX + DOT_RADIUS_PX) / 256f;
 
+    // Roda de ataque (A B C X): todos com o mesmo diametro, em dp
+    private static final float ATTACK_BTN_DP = 64f;
+    // Y e Z (coluna acima da roda): menores, em dp
+    private static final float SMALL_ATTACK_BTN_DP = 48f;
+
     // Quanto os botoes de ataque (A B C Y + X Z) ficam afastados do canto da tela, em dp.
     // Positivo = para dentro da tela (esquerda), longe do canto; negativo = para o canto.
     private static final float ATTACK_SHIFT_DP = 24f;
@@ -214,12 +219,12 @@ public class ControllerOverlay extends RelativeLayout {
 
         analogCtl = new Ctl("analog", "Analogico", TYPE_ANALOG, 150f, 0);
         ctls.add(analogCtl);
-        ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, 64f, 96));
-        ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, 64f, 97));
-        ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, 64f, 4005));
-        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 48f, 99));
-        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
-        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
+        ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, ATTACK_BTN_DP, 96));
+        ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, ATTACK_BTN_DP, 97));
+        ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, ATTACK_BTN_DP, 4005));
+        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, ATTACK_BTN_DP, 99));
+        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, SMALL_ATTACK_BTN_DP, 100));
+        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, SMALL_ATTACK_BTN_DP, 103));
         ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 48f, 108));
         // Troca de personagem (Tag): pequenos, canto superior direito
         Ctl tagD = new Ctl("d", "Botao D (Tag)", TYPE_BUTTON, 32f, 102);
@@ -272,7 +277,7 @@ public class ControllerOverlay extends RelativeLayout {
     // ------------------------------------------------------------------
     private float[] defaultCenter(Ctl c, int W, int H) {
         float d = density;
-        float bs = 64f * d;
+        float bs = ATTACK_BTN_DP * d;
         float marginR = 30f * d, marginB = 26f * d;
         // "Roda" de 4 botoes no canto inferior direito, em losango:
         //        X
@@ -286,7 +291,7 @@ public class ControllerOverlay extends RelativeLayout {
         float xX = cx + r + 6f * d;
         float xY = cy - r - 68f * d; // X/Z um pouco mais acima (distancia parecida com a do Start)
         float zX = xX + 12f * d;
-        float zY = Math.max(xY - 64f * d, 6f * d + 24f * d);
+        float zY = Math.max(xY - 64f * d, 6f * d + SMALL_ATTACK_BTN_DP / 2f * d);
         switch (c.key) {
             // Analogico na esquerda, afastado da borda para o dedo nao sair da tela ao puxar pra esquerda
             case "analog": return new float[]{ANALOG_LEFT_DP * d + 75f * d, H - marginB - 75f * d};

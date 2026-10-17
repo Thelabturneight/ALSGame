@@ -3,7 +3,6 @@ package org.libsdl.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
-import android.app.ProgressDialog;
 import android.app.UiModeManager;
 import android.content.ClipboardManager;
 import android.content.ClipData;
@@ -756,35 +755,21 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             } else {
                 Log.i("SDLActivity", "Specified files are outdated or missing. Beginning extraction...");
 
-                // Switch to UI thread to show the progress dialog
-                runOnUiThread(() -> {
-                    ProgressDialog progress = new ProgressDialog(this);
-                    progress.setTitle(R.string.updating_files_title);
-                    progress.setMessage(getString(R.string.updating_files_msg));
-                    progress.setCancelable(false);
-                    progress.show();
-
-                    // Start actual extraction thread
-                    new Thread(() -> {
-                        try {
-                            AssetExtractor.extractAll(getAssets(), baseDir, !seedOnly);
-                            mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
-                            runOnUiThread(() -> {
-                                progress.dismiss();
-                                onSDLReady();
-                            });
-                        } catch (Exception e) {
-                            runOnUiThread(() -> {
-                                progress.dismiss();
-                                new AlertDialog.Builder(this)
-                                        .setTitle(R.string.update_error_title)
-                                        .setMessage(e.getMessage())
-                                        .setPositiveButton(R.string.exit_str, (d, w) -> finish())
-                                        .show();
-                            });
-                        }
-                    }).start();
-                });
+                // Extracao silenciosa: sem dialogo de progresso, tudo em segundo plano.
+                // Quando termina, inicia o SDL; em caso de erro, mostra so o aviso de erro.
+                new Thread(() -> {
+                    try {
+                        AssetExtractor.extractAll(getAssets(), baseDir, !seedOnly);
+                        mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
+                        runOnUiThread(this::onSDLReady);
+                    } catch (Exception e) {
+                        runOnUiThread(() -> new AlertDialog.Builder(this)
+                                .setTitle(R.string.update_error_title)
+                                .setMessage(e.getMessage())
+                                .setPositiveButton(R.string.exit_str, (d, w) -> finish())
+                                .show());
+                    }
+                }).start();
             }
         }).start();
     }

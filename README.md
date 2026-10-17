@@ -32,4 +32,4 @@ The original license is included in LICENSE.txt
 * **Configurações > Controle > Tipo de Direcional:** D-pad (padrão) ou Analógico (salvo automaticamente).
 * **Configurações > Controle > Mapeamento:** arraste cada controle para a posição desejada (salvo automaticamente).
   Tamanho e opacidade são fixos (opacidade padrão: 30%).
-* **Botão Y = esquiva:** com o direcional pressionado para um lado, o Y faz o mesmo que tocar duas vezes rápido nessa direção.
+* **Layout padrão dos botões:** roda de 4 botões com X em cima, B à esquerda, C à direita e A embaixo; Y e Z ficam acima da roda, na lateral direita. O Y envia apenas o botão Y do jogo.

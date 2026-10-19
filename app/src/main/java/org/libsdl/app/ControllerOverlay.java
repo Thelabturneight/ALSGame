@@ -48,6 +48,7 @@ import java.util.Map;
 public class ControllerOverlay extends RelativeLayout {
     public static final int MODE_MENU = 0;
     public static final int MODE_FIGHT = 1;
+    public static final int MODE_PREVIEW = 2; // controles desenhados, mas o toque continua indo para os menus (tela de tamanho)
 
     // Teclas do gamepad virtual -> teclas do Ikemen (config padrao Joystick_P1)
     // 102 = LB (tecla "d" do Ikemen), 4004 = LT (tecla "w" do Ikemen): troca de personagem no modo Tag
@@ -61,6 +62,10 @@ public class ControllerOverlay extends RelativeLayout {
     private static final String PREFS_NAME = "ikemen_touch_layout_v3";
     private static final String KEY_DPAD = "dirtype_dpad_v2"; // padrao: D-pad
     private static final float DEFAULT_ALPHA = 0.30f; // opacidade padrao de todos os controles
+    private static final String KEY_SIZE = "ctlsize_pct_v1";  // tamanho dos controles, em %
+    private static final String KEY_HIDE = "autohide_sec_v1"; // segundos sem tocar ate esconder (0 = nunca)
+    private static final float PREVIEW_BOOST = 1.8f;           // na previa os controles ficam mais visiveis
+    private static final long FADE_MS = 400L;
 
     // Desenhos (res/drawable-nodpi). Cada PNG de botao e 256x256 com o anel de 248 px de diametro;
     // a base do analogico e 512x512 com anel de 504 px; a alavanca (anel do meio + bolinha) e 256x256.
@@ -76,11 +81,6 @@ public class ControllerOverlay extends RelativeLayout {
     private static final float RING_OUTER_PX = 124f;
     private static final float DOT_RADIUS_PX = 77f;
     private static final float THUMB_TRAVEL_IN_STICK = (RING_OUTER_PX + DOT_RADIUS_PX) / 256f;
-
-    // Roda de ataque (A B C X): todos com o mesmo diametro, em dp
-    private static final float ATTACK_BTN_DP = 64f;
-    // Y e Z (coluna acima da roda): menores, em dp
-    private static final float SMALL_ATTACK_BTN_DP = 48f;
 
     // Quanto os botoes de ataque (A B C Y + X Z) ficam afastados do canto da tela, em dp.
     // Positivo = para dentro da tela (esquerda), longe do canto; negativo = para o canto.
@@ -132,6 +132,14 @@ public class ControllerOverlay extends RelativeLayout {
     private int hatX = 0, hatY = 0;
     private int analogPointer = -1;
     private boolean dpadMode = true;    // true = D-pad (padrao), false = analogico
+    private float sizeScale = 1f;       // tamanho de todos os controles (1 = 100%)
+    private int autoHideSec = 5;        // 0 = os controles nunca somem
+    private long lastActivity = 0L;
+    private final Runnable hideCheck = new Runnable() {
+        @Override public void run() {
+            invalidate(); // onDraw calcula o desaparecimento gradual
+        }
+    };
     private final android.os.Handler uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final android.graphics.Path dpadClip = new android.graphics.Path();
     private float thumbDx = 0f, thumbDy = 0f;
@@ -219,12 +227,12 @@ public class ControllerOverlay extends RelativeLayout {
 
         analogCtl = new Ctl("analog", "Analogico", TYPE_ANALOG, 150f, 0);
         ctls.add(analogCtl);
-        ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, ATTACK_BTN_DP, 96));
-        ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, ATTACK_BTN_DP, 97));
-        ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, ATTACK_BTN_DP, 4005));
-        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, ATTACK_BTN_DP, 99));
-        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, SMALL_ATTACK_BTN_DP, 100));
-        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, SMALL_ATTACK_BTN_DP, 103));
+        ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, 64f, 96));
+        ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, 64f, 97));
+        ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, 64f, 4005));
+        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 48f, 99));
+        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
+        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
         ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 48f, 108));
         // Troca de personagem (Tag): pequenos, canto superior direito
         Ctl tagD = new Ctl("d", "Botao D (Tag)", TYPE_BUTTON, 32f, 102);
@@ -277,24 +285,26 @@ public class ControllerOverlay extends RelativeLayout {
     // ------------------------------------------------------------------
     private float[] defaultCenter(Ctl c, int W, int H) {
         float d = density;
-        float bs = ATTACK_BTN_DP * d;
+        float dk = density * sizeScale; // distancias que acompanham o tamanho dos controles
+        float bs = 64f * dk;
         float marginR = 30f * d, marginB = 26f * d;
         // "Roda" de 4 botoes no canto inferior direito, em losango:
         //        X
         //     B     C
         //        A
         // Acima da roda, subindo pela lateral direita: Y (embaixo) e Z (em cima)
-        float r = 52f * d;
+        float r = 52f * dk;
         float cx = W - marginR - r - bs / 2f - ATTACK_SHIFT_DP * d;
         float cy = H - marginB - r - bs / 2f;
         // Y e Z ficam separados da roda, subindo pela lateral direita (Y acima da roda, Z acima do Y)
         float xX = cx + r + 6f * d;
-        float xY = cy - r - 68f * d; // X/Z um pouco mais acima (distancia parecida com a do Start)
+        float xY = cy - r - 68f * dk; // X/Z um pouco mais acima (distancia parecida com a do Start)
         float zX = xX + 12f * d;
-        float zY = Math.max(xY - 64f * d, 6f * d + SMALL_ATTACK_BTN_DP / 2f * d);
+        float zY = Math.max(xY - 64f * dk, 6f * d + 24f * d);
+        float topY = Math.max(MENU_CY_DP * d, 14f * d + 20f * dk); // linha de cima (Menu, D, W)
         switch (c.key) {
             // Analogico na esquerda, afastado da borda para o dedo nao sair da tela ao puxar pra esquerda
-            case "analog": return new float[]{ANALOG_LEFT_DP * d + 75f * d, H - marginB - 75f * d};
+            case "analog": return new float[]{ANALOG_LEFT_DP * d + 75f * dk, H - marginB - 75f * dk};
             case "x":      return new float[]{cx, cy - r};
             case "b":      return new float[]{cx - r, cy};
             case "c":      return new float[]{cx + r, cy};
@@ -303,12 +313,12 @@ public class ControllerOverlay extends RelativeLayout {
             case "z":      return new float[]{zX, zY};
             // Troca de personagem (Tag): fileira no canto superior direito, W no canto e D ao lado
             // (mesma altura do centro do botao Menu: ficam alinhados em linha reta com ele)
-            case "w":      return new float[]{W - 14f * d - 16f * d, MENU_CY_DP * d};
-            case "d":      return new float[]{W - 14f * d - 16f * d - 46f * d, MENU_CY_DP * d};
+            case "w":      return new float[]{W - 14f * d - 16f * dk, topY};
+            case "d":      return new float[]{W - 14f * d - 16f * dk - 46f * dk, topY};
             // Menu: cantinho superior esquerdo, fora do caminho
-            case "menu":   return new float[]{16f * d + 20f * d, MENU_CY_DP * d};
+            case "menu":   return new float[]{16f * d + 20f * dk, topY};
             // Start: embaixo, ao lado esquerdo da roda
-            case "start":  return new float[]{cx - r - bs / 2f - 50f * d, H - marginB - 24f * d};
+            case "start":  return new float[]{cx - r - bs / 2f - 50f * dk, H - marginB - 24f * dk};
             default:       return new float[]{W / 2f, H / 2f};
         }
     }
@@ -340,11 +350,13 @@ public class ControllerOverlay extends RelativeLayout {
     // ------------------------------------------------------------------
     private void loadPrefs() {
         dpadMode = sp.getBoolean(KEY_DPAD, true);
+        sizeScale = clampScale(sp.getInt(KEY_SIZE, 100) / 100f);
+        autoHideSec = Math.max(0, sp.getInt(KEY_HIDE, 5));
         for (Ctl c : ctls) {
             String k = c.key + ".";
-            // Tamanho, opacidade, visibilidade e tecla nao sao mais editaveis: sempre o padrao.
+            // Opacidade, visibilidade e tecla nao sao editaveis: sempre o padrao. O tamanho vem do engine (Configuracoes).
             c.visible = true;
-            c.scale = 1f;
+            c.scale = sizeScale;
             c.alpha = DEFAULT_ALPHA;
             c.code = c.defCode;
             c.fx = sp.getFloat(k + "fx", -1f);
@@ -360,16 +372,72 @@ public class ControllerOverlay extends RelativeLayout {
             e.putFloat(k + "fy", c.fy);
         }
         e.putBoolean(KEY_DPAD, dpadMode);
+        e.putInt(KEY_SIZE, Math.round(sizeScale * 100f));
+        e.putInt(KEY_HIDE, autoHideSec);
         e.apply();
     }
 
     private void resetCtl(Ctl c) {
         c.visible = true;
-        c.scale = 1f;
+        c.scale = sizeScale;
         c.alpha = DEFAULT_ALPHA;
         c.code = c.defCode;
         c.fx = -1f;
         c.fy = -1f;
+    }
+
+    private static float clampScale(float s) {
+        return Math.max(0.5f, Math.min(2.0f, s));
+    }
+
+    /** Tamanho dos controles (vindo do engine), em %. Salvo automaticamente. */
+    public void setControlSize(int percent) {
+        final float s = clampScale(percent / 100f);
+        if (Math.abs(s - sizeScale) < 0.001f) return;
+        sizeScale = s;
+        uiHandler.post(new Runnable() {
+            @Override public void run() {
+                for (Ctl c : ctls) c.scale = sizeScale;
+                applyLayout();
+                savePrefs();
+                invalidate();
+            }
+        });
+    }
+
+    /** Segundos sem tocar ate os controles da luta sumirem (vindo do engine). 0 = nunca somem. */
+    public void setAutoHide(int seconds) {
+        final int v = Math.max(0, seconds);
+        if (v == autoHideSec) return;
+        autoHideSec = v;
+        savePrefs();
+        touchActivity();
+    }
+
+    // Registra atividade (toque) e agenda a verificacao do desaparecimento
+    private void markActivity() {
+        lastActivity = android.os.SystemClock.uptimeMillis();
+        uiHandler.removeCallbacks(hideCheck);
+        if (autoHideSec > 0) uiHandler.postDelayed(hideCheck, autoHideSec * 1000L + 20L);
+    }
+
+    private void touchActivity() {
+        markActivity();
+        postInvalidate();
+    }
+
+    // 1 = controles visiveis, 0 = escondidos, entre os dois = sumindo
+    private float fightVisibility() {
+        if (autoHideSec <= 0) return 1f;
+        if (analogPointer != -1 || !pointerCtl.isEmpty()) { // dedo segurando um controle: conta como atividade
+            markActivity();
+            return 1f;
+        }
+        long idle = android.os.SystemClock.uptimeMillis() - lastActivity - autoHideSec * 1000L;
+        if (idle <= 0L) return 1f;
+        if (idle >= FADE_MS) return 0f;
+        postInvalidateOnAnimation();
+        return 1f - idle / (float) FADE_MS;
     }
 
     /** Tipo de direcional (vindo do engine): false = analogico, true = D-pad. Salvo automaticamente. */
@@ -392,15 +460,26 @@ public class ControllerOverlay extends RelativeLayout {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (editMode) {
-            for (Ctl c : ctls) drawCtl(canvas, c, true);
+            for (Ctl c : ctls) drawCtl(canvas, c, true, 1f);
             if (selected != null) {
                 float r = selected.radius(density) + 8f * density;
                 canvas.drawCircle(selected.cx, selected.cy, r, dashPaint);
             }
         } else if (mode == MODE_FIGHT) {
-            for (Ctl c : ctls) {
-                if (c.visible && (!c.tagOnly || tagMode)) drawCtl(canvas, c, false);
+            float vis = fightVisibility();
+            if (vis > 0f) {
+                for (Ctl c : ctls) {
+                    if (c.visible && (!c.tagOnly || tagMode)) drawCtl(canvas, c, false, vis);
+                }
             }
+        } else if (mode == MODE_PREVIEW) {
+            // previa do tamanho: mostra todos os controles (o botao Menu so se nao houver o "Voltar" no mesmo canto)
+            for (Ctl c : ctls) {
+                if (!c.visible || (c.tagOnly && !tagMode)) continue;
+                if (c == menuCtl && backVisible) continue;
+                drawCtl(canvas, c, false, PREVIEW_BOOST);
+            }
+            if (backVisible) drawBackButton(canvas);
         } else if (backVisible) {
             drawBackButton(canvas);
         }
@@ -409,13 +488,13 @@ public class ControllerOverlay extends RelativeLayout {
     private void drawBmp(Canvas canvas, Bitmap bmp, float cx, float cy, float size, float alpha) {
         if (bmp == null) return;
         dst.set(cx - size / 2f, cy - size / 2f, cx + size / 2f, cy + size / 2f);
-        bmpPaint.setAlpha((int) (255 * Math.max(0.1f, Math.min(1f, alpha))));
+        bmpPaint.setAlpha((int) (255 * Math.max(0f, Math.min(1f, alpha))));
         canvas.drawBitmap(bmp, null, dst, bmpPaint);
     }
 
-    private void drawCtl(Canvas canvas, Ctl c, boolean editing) {
+    private void drawCtl(Canvas canvas, Ctl c, boolean editing, float vis) {
         float r = c.radius(density);
-        float a = c.visible ? c.alpha : 0.25f; // oculto: so aparece "fantasma" no editor
+        float a = (c.visible ? c.alpha : 0.25f) * vis; // oculto: so aparece "fantasma" no editor
         if (c.type == TYPE_ANALOG && dpadMode) {
             drawDpad(canvas, c, r, a, editing);
         } else if (c.type == TYPE_ANALOG) {
@@ -499,6 +578,7 @@ public class ControllerOverlay extends RelativeLayout {
         if (mode == newMode) return;
         releaseAll();
         mode = newMode;
+        if (newMode == MODE_FIGHT) touchActivity(); // volta para a luta: controles aparecem
         invalidate();
     }
 
@@ -687,7 +767,7 @@ public class ControllerOverlay extends RelativeLayout {
         if (editMode) {
             return handleEditTouch(event);
         }
-        if (mode == MODE_MENU) {
+        if (mode == MODE_MENU || mode == MODE_PREVIEW) {
             return handleMenuTouch(event);
         }
         return handleFightTouch(event);
@@ -725,6 +805,7 @@ public class ControllerOverlay extends RelativeLayout {
     }
 
     private boolean handleFightTouch(MotionEvent event) {
+        markActivity(); // qualquer toque faz os controles reaparecerem
         int action = event.getActionMasked();
         int index = event.getActionIndex();
         int pId = event.getPointerId(index);

@@ -3,6 +3,7 @@ package org.libsdl.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.app.ProgressDialog;
 import android.app.UiModeManager;
 import android.content.ClipboardManager;
 import android.content.ClipData;
@@ -755,21 +756,35 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             } else {
                 Log.i("SDLActivity", "Specified files are outdated or missing. Beginning extraction...");
 
-                // Extracao silenciosa: sem dialogo de progresso, tudo em segundo plano.
-                // Quando termina, inicia o SDL; em caso de erro, mostra so o aviso de erro.
-                new Thread(() -> {
-                    try {
-                        AssetExtractor.extractAll(getAssets(), baseDir, !seedOnly);
-                        mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
-                        runOnUiThread(this::onSDLReady);
-                    } catch (Exception e) {
-                        runOnUiThread(() -> new AlertDialog.Builder(this)
-                                .setTitle(R.string.update_error_title)
-                                .setMessage(e.getMessage())
-                                .setPositiveButton(R.string.exit_str, (d, w) -> finish())
-                                .show());
-                    }
-                }).start();
+                // Switch to UI thread to show the progress dialog
+                runOnUiThread(() -> {
+                    ProgressDialog progress = new ProgressDialog(this);
+                    progress.setTitle(R.string.updating_files_title);
+                    progress.setMessage(getString(R.string.updating_files_msg));
+                    progress.setCancelable(false);
+                    progress.show();
+
+                    // Start actual extraction thread
+                    new Thread(() -> {
+                        try {
+                            AssetExtractor.extractAll(getAssets(), baseDir, !seedOnly);
+                            mSharedPrefs.edit().putLong(KEY_EXTRACTED_STAMP, apkStamp).commit();
+                            runOnUiThread(() -> {
+                                progress.dismiss();
+                                onSDLReady();
+                            });
+                        } catch (Exception e) {
+                            runOnUiThread(() -> {
+                                progress.dismiss();
+                                new AlertDialog.Builder(this)
+                                        .setTitle(R.string.update_error_title)
+                                        .setMessage(e.getMessage())
+                                        .setPositiveButton(R.string.exit_str, (d, w) -> finish())
+                                        .show();
+                            });
+                        }
+                    }).start();
+                });
             }
         }).start();
     }
@@ -1120,9 +1135,20 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         // Messages sent by the Ikemen engine (SDL_AndroidSendMessage, see src/touch.go)
         final int value = (param instanceof Integer) ? (Integer) param : 0;
         switch (command - COMMAND_USER) {
-            case 1: // 0 = menus, 1 = fight
+            case 1: // 0 = menus, 1 = fight, 2 = preview (controls drawn, touch goes to the menus)
                 if (mControllerOverlay != null) {
-                    mControllerOverlay.setMode(value == 1 ? ControllerOverlay.MODE_FIGHT : ControllerOverlay.MODE_MENU);
+                    mControllerOverlay.setMode(value == 1 ? ControllerOverlay.MODE_FIGHT
+                            : (value == 2 ? ControllerOverlay.MODE_PREVIEW : ControllerOverlay.MODE_MENU));
+                }
+                return true;
+            case 6: // controls size, in percent (60..150)
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setControlSize(value);
+                }
+                return true;
+            case 7: // seconds without touch before the fight controls fade out (0 = never)
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setAutoHide(value);
                 }
                 return true;
             case 2: // open the touch controls editor

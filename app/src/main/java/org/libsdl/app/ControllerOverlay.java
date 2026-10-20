@@ -12,6 +12,12 @@ import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
+import android.app.Dialog;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -145,6 +151,9 @@ public class ControllerOverlay extends RelativeLayout {
     private float thumbDx = 0f, thumbDy = 0f;
 
     private int mode = MODE_MENU;
+    private boolean watchMode = false; // espectador: so o botao Menu aparece
+    private long introUntil = 0L;      // controles so aparecem depois deste instante (introducao da luta)
+    private static final long INTRO_DELAY_MS = 2800L;
     private boolean tagMode = false; // partida em modo Tag: mostra os botoes D e W
     private boolean backVisible = false; // starts hidden (boot/loading/title); the engine shows it inside submenus
     private boolean editMode = false;
@@ -230,9 +239,9 @@ public class ControllerOverlay extends RelativeLayout {
         ctls.add(new Ctl("a", "Botao A", TYPE_BUTTON, 64f, 96));
         ctls.add(new Ctl("b", "Botao B", TYPE_BUTTON, 64f, 97));
         ctls.add(new Ctl("c", "Botao C", TYPE_BUTTON, 64f, 4005));
-        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 48f, 99));
-        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100));
-        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 48f, 103));
+        ctls.add(new Ctl("x", "Botao X", TYPE_BUTTON, 64f, 99)); // mesmo tamanho dos botoes da roda (A B C)
+        ctls.add(new Ctl("y", "Botao Y", TYPE_BUTTON, 64f, 100)); // Y e Z com o mesmo tamanho
+        ctls.add(new Ctl("z", "Botao Z", TYPE_BUTTON, 64f, 103));
         ctls.add(new Ctl("start", "Botao Start", TYPE_BUTTON, 48f, 108));
         // Troca de personagem (Tag): pequenos, canto superior direito
         Ctl tagD = new Ctl("d", "Botao D (Tag)", TYPE_BUTTON, 32f, 102);
@@ -300,7 +309,8 @@ public class ControllerOverlay extends RelativeLayout {
         float xX = cx + r + 6f * d;
         float xY = cy - r - 68f * dk; // X/Z um pouco mais acima (distancia parecida com a do Start)
         float zX = xX + 12f * d;
-        float zY = Math.max(xY - 64f * dk, 6f * d + 24f * d);
+        float zY = Math.max(xY - 74f * dk, 6f * d + 32f * dk);
+        if (xY - zY < 68f * dk) xY = zY + 68f * dk; // telas baixas: Y desce um pouco para nao encostar no Z
         float topY = Math.max(MENU_CY_DP * d, 14f * d + 20f * dk); // linha de cima (Menu, D, W)
         switch (c.key) {
             // Analogico na esquerda, afastado da borda para o dedo nao sair da tela ao puxar pra esquerda
@@ -414,11 +424,51 @@ public class ControllerOverlay extends RelativeLayout {
         touchActivity();
     }
 
+    /** Luta acabou de comecar: os controles esperam a introducao e depois surgem aos poucos. */
+    public void startFightIntro() {
+        introUntil = android.os.SystemClock.uptimeMillis() + INTRO_DELAY_MS;
+        lastActivity = introUntil; // o "ocultar automatico" conta a partir do momento em que aparecem
+        uiHandler.removeCallbacks(hideCheck);
+        if (autoHideSec > 0) uiHandler.postDelayed(hideCheck, INTRO_DELAY_MS + autoHideSec * 1000L + 20L);
+        postInvalidate();
+    }
+
+    /** Modo espectador (watch): esconde todos os controles, menos o botao Menu. */
+    public void setWatchMode(final boolean v) {
+        if (watchMode == v) return;
+        watchMode = v;
+        uiHandler.post(new Runnable() {
+            @Override public void run() {
+                releaseAll();
+                invalidate();
+            }
+        });
+    }
+
+    // 0 durante a introducao, sobe a 1 em FADE_MS depois dela
+    private float introFactor() {
+        if (introUntil == 0L) return 1f;
+        long t = android.os.SystemClock.uptimeMillis() - introUntil;
+        if (t < 0L) {
+            postInvalidateOnAnimation();
+            return 0f;
+        }
+        if (t >= FADE_MS) return 1f;
+        postInvalidateOnAnimation();
+        return t / (float) FADE_MS;
+    }
+
+    private boolean ctlBlocked(Ctl c) { // nao desenha nem recebe toque
+        if (c == menuCtl) return false;
+        return watchMode || introFactor() < 0.5f;
+    }
+
     // Registra atividade (toque) e agenda a verificacao do desaparecimento
     private void markActivity() {
-        lastActivity = android.os.SystemClock.uptimeMillis();
+        long now = android.os.SystemClock.uptimeMillis();
+        lastActivity = Math.max(now, introUntil); // durante a introducao o tempo ainda nao conta
         uiHandler.removeCallbacks(hideCheck);
-        if (autoHideSec > 0) uiHandler.postDelayed(hideCheck, autoHideSec * 1000L + 20L);
+        if (autoHideSec > 0) uiHandler.postDelayed(hideCheck, (lastActivity - now) + autoHideSec * 1000L + 20L);
     }
 
     private void touchActivity() {
@@ -468,8 +518,11 @@ public class ControllerOverlay extends RelativeLayout {
         } else if (mode == MODE_FIGHT) {
             float vis = fightVisibility();
             if (vis > 0f) {
+                float intro = introFactor();
                 for (Ctl c : ctls) {
-                    if (c.visible && (!c.tagOnly || tagMode)) drawCtl(canvas, c, false, vis);
+                    if (!c.visible || (c.tagOnly && !tagMode)) continue;
+                    if (c != menuCtl && (watchMode || intro <= 0f)) continue;
+                    drawCtl(canvas, c, false, c == menuCtl ? vis : vis * intro);
                 }
             }
         } else if (mode == MODE_PREVIEW) {
@@ -680,65 +733,169 @@ public class ControllerOverlay extends RelativeLayout {
         return true;
     }
 
+    // ------------------------------------------------------------------
+    // Visual "neon" do editor (mesma paleta dos menus do jogo: vinho escuro, rosa neon e dourado)
+    // ------------------------------------------------------------------
+    private static final int NEON_PINK = Color.rgb(255, 46, 133);
+    private static final int NEON_PINK_DARK = Color.rgb(196, 24, 98);
+    private static final int NEON_GOLD = Color.rgb(255, 176, 0);
+    private static final int NEON_BG = Color.argb(238, 30, 10, 26);
+    private static final int NEON_TEXT = Color.rgb(255, 232, 240);
+
+    private int dp(float v) {
+        return Math.round(v * density);
+    }
+
+    private GradientDrawable roundRect(int fill, int stroke, float strokeDp, float radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(fill);
+        g.setCornerRadius(dp(radiusDp));
+        if (strokeDp > 0f) g.setStroke(Math.max(1, dp(strokeDp)), stroke);
+        return g;
+    }
+
+    /** Botao no estilo do jogo: "primary" = preenchido em rosa neon; senao, contorno rosa. */
+    private TextView neonButton(Context context, String text, final boolean primary) {
+        TextView b = new TextView(context);
+        b.setText(text);
+        b.setAllCaps(true);
+        b.setGravity(Gravity.CENTER);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextSize(13f);
+        b.setLetterSpacing(0.08f);
+        b.setTextColor(primary ? Color.WHITE : NEON_TEXT);
+        b.setClickable(true);
+        b.setFocusable(true);
+        b.setPadding(dp(14), dp(10), dp(14), dp(10));
+        GradientDrawable normal, pressed;
+        if (primary) {
+            normal = roundRect(NEON_PINK, NEON_GOLD, 1.5f, 12f);
+            pressed = roundRect(NEON_PINK_DARK, NEON_GOLD, 1.5f, 12f);
+        } else {
+            normal = roundRect(Color.argb(60, 255, 46, 133), NEON_PINK, 1.5f, 12f);
+            pressed = roundRect(Color.argb(130, 255, 46, 133), NEON_PINK, 1.5f, 12f);
+        }
+        StateListDrawable sl = new StateListDrawable();
+        sl.addState(new int[]{android.R.attr.state_pressed}, pressed);
+        sl.addState(new int[]{}, normal);
+        b.setBackground(sl);
+        return b;
+    }
+
     private void buildPanel(Context context) {
-        int pad = (int) (10 * density);
         panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(pad, pad, pad, pad);
-        panel.setBackgroundColor(Color.argb(215, 18, 18, 22));
+        panel.setPadding(dp(16), dp(12), dp(16), dp(14));
+        panel.setBackground(roundRect(NEON_BG, NEON_PINK, 2f, 18f));
+        panel.setElevation(dp(8));
         panel.setVisibility(View.GONE);
 
         panelTitle = new TextView(context);
-        panelTitle.setTextColor(Color.WHITE);
-        panelTitle.setTextSize(15f);
+        panelTitle.setTextColor(NEON_TEXT);
+        panelTitle.setTextSize(14f);
         panelTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        panelTitle.setLetterSpacing(0.04f);
         panelTitle.setGravity(Gravity.CENTER);
-        panelTitle.setText("Arraste os controles para mapear a posicao");
+        panelTitle.setText("Arraste os controles para posicion\u00e1-los");
         panel.addView(panelTitle);
+
+        // fio dourado separando o titulo dos botoes
+        View line = new View(context);
+        line.setBackgroundColor(Color.argb(160, 255, 176, 0));
+        LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(dp(56), dp(2));
+        lineLp.gravity = Gravity.CENTER_HORIZONTAL;
+        lineLp.topMargin = dp(8);
+        lineLp.bottomMargin = dp(10);
+        panel.addView(line, lineLp);
 
         LinearLayout buttons = new LinearLayout(context);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        Button resetAll = new Button(context);
-        resetAll.setText("Restaurar padrao");
+        TextView resetAll = neonButton(context, "Restaurar padr\u00e3o", false);
         resetAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 confirmResetAll();
             }
         });
-        Button done = new Button(context);
-        done.setText("Concluir");
+        TextView done = neonButton(context, "Concluir", true);
         done.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 closeEditor();
             }
         });
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        buttons.addView(resetAll, bp);
-        buttons.addView(done, bp);
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        left.rightMargin = dp(5);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        right.leftMargin = dp(5);
+        buttons.addView(resetAll, left);
+        buttons.addView(done, right);
         panel.addView(buttons);
 
-        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams((int) (340 * density), LayoutParams.WRAP_CONTENT);
+        RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(dp(360), LayoutParams.WRAP_CONTENT);
         lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
         lp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        lp.topMargin = (int) (6 * density);
+        lp.topMargin = dp(8);
         addView(panel, lp);
     }
 
+    // Confirmacao no mesmo estilo (em vez do AlertDialog cinza padrao do Android)
     private void confirmResetAll() {
-        AlertDialog.Builder b = new AlertDialog.Builder(getContext());
-        b.setMessage("Restaurar a posicao de todos os controles para o padrao?");
-        b.setPositiveButton("Restaurar", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface d, int which) {
+        final Dialog dlg = new Dialog(getContext());
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout box = new LinearLayout(getContext());
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(18), dp(20), dp(16));
+        box.setBackground(roundRect(Color.rgb(34, 12, 30), NEON_PINK, 2f, 18f));
+
+        TextView title = new TextView(getContext());
+        title.setText("Restaurar posi\u00e7\u00f5es?");
+        title.setTextColor(NEON_TEXT);
+        title.setTextSize(17f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setGravity(Gravity.CENTER);
+        box.addView(title);
+
+        TextView msg = new TextView(getContext());
+        msg.setText("Todos os controles voltam para o lugar padr\u00e3o.");
+        msg.setTextColor(Color.argb(210, 255, 232, 240));
+        msg.setTextSize(14f);
+        msg.setGravity(Gravity.CENTER);
+        msg.setPadding(0, dp(8), 0, dp(16));
+        box.addView(msg);
+
+        LinearLayout row = new LinearLayout(getContext());
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView cancel = neonButton(getContext(), "Cancelar", false);
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dlg.dismiss(); }
+        });
+        TextView ok = neonButton(getContext(), "Restaurar", true);
+        ok.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
                 for (Ctl c : ctls) resetCtl(c);
                 applyLayout();
                 savePrefs();
+                dlg.dismiss();
             }
         });
-        b.setNegativeButton("Cancelar", null);
-        b.show();
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        a.rightMargin = dp(5);
+        LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        b.leftMargin = dp(5);
+        row.addView(cancel, a);
+        row.addView(ok, b);
+        box.addView(row);
+
+        dlg.setContentView(box);
+        Window w = dlg.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setLayout(dp(340), WindowManager.LayoutParams.WRAP_CONTENT);
+            w.setDimAmount(0.55f);
+        }
+        dlg.show();
     }
 
     private void updatePanel() { }
@@ -849,6 +1006,7 @@ public class ControllerOverlay extends RelativeLayout {
             Ctl c = ctls.get(i);
             if (!c.visible) continue;
             if (c.tagOnly && !tagMode) continue; // botoes de Tag so existem no modo Tag
+            if (ctlBlocked(c)) continue; // espectador / introducao: so o Menu
             if (isInsideCtl(c, x, y)) return c;
         }
         return null;

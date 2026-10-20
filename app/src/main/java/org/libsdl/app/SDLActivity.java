@@ -1137,7 +1137,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         switch (command - COMMAND_USER) {
             case 1: // 0 = menus, 1 = fight, 2 = preview (controls drawn, touch goes to the menus)
                 if (mControllerOverlay != null) {
-                    mControllerOverlay.setMode(value == 1 ? ControllerOverlay.MODE_FIGHT
+                    if (value == 3) mControllerOverlay.startFightIntro(); // luta comecou: controles so depois da introducao
+                    mControllerOverlay.setMode((value == 1 || value == 3) ? ControllerOverlay.MODE_FIGHT
                             : (value == 2 ? ControllerOverlay.MODE_PREVIEW : ControllerOverlay.MODE_MENU));
                 }
                 return true;
@@ -1159,6 +1160,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             case 4: // 0 = not a Tag match, 1 = Tag match (shows the D/W swap buttons)
                 if (mControllerOverlay != null) {
                     mControllerOverlay.setTagMode(value == 1);
+                }
+                return true;
+            case 8: // 0 = normal match, 1 = spectator (watch): only the Menu button
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setWatchMode(value == 1);
                 }
                 return true;
             case 5: // 0 = analog stick, 1 = D-pad

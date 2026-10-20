@@ -18,7 +18,7 @@
     <string name="touch_reset">Restaurar</string>
     <string name="touch_reset_confirm">Restaurar o layout e as configurações padrão dos controles?</string>
     <string name="touch_close">Fechar</string>
-    <string name="touch_done">Concluir</string>
+    <string name="touch_done">Concluído</string>
     <string name="touch_options">Opções</string>
     <string name="touch_edit_hint">Arraste um controle para mover. Toque em um controle para ajustar.</string>
     <string name="touch_visible">Mostrar este controle</string>

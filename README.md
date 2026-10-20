@@ -29,7 +29,6 @@ The original license is included in LICENSE.txt
 
 ## Controles touch / Touch controls
 
-* **Configurações > Controle > Tipo de Direcional:** D-pad (padrão) ou Analógico (salvo automaticamente).
-* **Configurações > Controle > Mapeamento:** arraste cada controle para a posição desejada (salvo automaticamente).
-  Tamanho e opacidade são fixos (opacidade padrão: 30%).
+* **Configurações > Controle > Mapeamento (primeira opção):** arraste cada controle para a posição desejada (salvo automaticamente).
+  O tamanho e a opacidade (padrão: 30%) são ajustados em Configurações > Controle ("Tamanho dos Controles" e "Opacidade dos Controles").
 * **Layout padrão dos botões:** roda de 4 botões com X em cima, B à esquerda, C à direita e A embaixo; Y e Z ficam acima da roda, na lateral direita. O Y envia apenas o botão Y do jogo.

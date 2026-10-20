@@ -8,7 +8,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
@@ -49,7 +48,7 @@ import java.util.Map;
  *  - LUTA: analogico + botoes A B C X Y Z, Start e Menu.
  *  - EDITOR: aberto por "Configuracoes > Controle > Mapeamento". Os controles ficam SEMPRE visiveis.
  *          So da para arrastar cada controle para a posicao desejada (salva automaticamente).
- *          Tamanho e opacidade sao fixos (opacidade padrao 30%).
+ *          Tamanho e opacidade vem de Configuracoes > Controle (opacidade padrao 30%).
  */
 public class ControllerOverlay extends RelativeLayout {
     public static final int MODE_MENU = 0;
@@ -69,8 +68,8 @@ public class ControllerOverlay extends RelativeLayout {
     private static final String KEY_DPAD = "dirtype_dpad_v2"; // padrao: D-pad
     private static final float DEFAULT_ALPHA = 0.30f; // opacidade padrao de todos os controles
     private static final String KEY_SIZE = "ctlsize_pct_v1";  // tamanho dos controles, em %
+    private static final String KEY_ALPHA = "ctlalpha_pct_v1"; // opacidade dos controles, em %
     private static final String KEY_HIDE = "autohide_sec_v1"; // segundos sem tocar ate esconder (0 = nunca)
-    private static final float PREVIEW_BOOST = 1.8f;           // na previa os controles ficam mais visiveis
     private static final long FADE_MS = 400L;
 
     // Desenhos (res/drawable-nodpi). Cada PNG de botao e 256x256 com o anel de 248 px de diametro;
@@ -139,6 +138,7 @@ public class ControllerOverlay extends RelativeLayout {
     private int analogPointer = -1;
     private boolean dpadMode = true;    // true = D-pad (padrao), false = analogico
     private float sizeScale = 1f;       // tamanho de todos os controles (1 = 100%)
+    private float userAlpha = DEFAULT_ALPHA; // opacidade de todos os controles (0.1 .. 1.0), escolhida em Configuracoes > Controle
     private int autoHideSec = 5;        // 0 = os controles nunca somem
     private long lastActivity = 0L;
     private final Runnable hideCheck = new Runnable() {
@@ -166,7 +166,6 @@ public class ControllerOverlay extends RelativeLayout {
     private boolean panelGesture = false;
 
     private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint bmpPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
     private final RectF dst = new RectF();
 
@@ -255,10 +254,6 @@ public class ControllerOverlay extends RelativeLayout {
 
         fillPaint.setStyle(Paint.Style.FILL);
         loadBitmaps(context);
-        dashPaint.setStyle(Paint.Style.STROKE);
-        dashPaint.setStrokeWidth(2f * density);
-        dashPaint.setColor(Color.rgb(255, 214, 102));
-        dashPaint.setPathEffect(new DashPathEffect(new float[]{10f * density, 7f * density}, 0f));
 
         loadPrefs();
         buildPanel(context);
@@ -362,12 +357,13 @@ public class ControllerOverlay extends RelativeLayout {
         dpadMode = sp.getBoolean(KEY_DPAD, true);
         sizeScale = clampScale(sp.getInt(KEY_SIZE, 100) / 100f);
         autoHideSec = Math.max(0, sp.getInt(KEY_HIDE, 5));
+        userAlpha = clampAlpha(sp.getInt(KEY_ALPHA, Math.round(DEFAULT_ALPHA * 100f)) / 100f);
         for (Ctl c : ctls) {
             String k = c.key + ".";
-            // Opacidade, visibilidade e tecla nao sao editaveis: sempre o padrao. O tamanho vem do engine (Configuracoes).
+            // Visibilidade e tecla nao sao editaveis. Tamanho e opacidade vem do engine (Configuracoes > Controle).
             c.visible = true;
             c.scale = sizeScale;
-            c.alpha = DEFAULT_ALPHA;
+            c.alpha = userAlpha;
             c.code = c.defCode;
             c.fx = sp.getFloat(k + "fx", -1f);
             c.fy = sp.getFloat(k + "fy", -1f);
@@ -384,13 +380,14 @@ public class ControllerOverlay extends RelativeLayout {
         e.putBoolean(KEY_DPAD, dpadMode);
         e.putInt(KEY_SIZE, Math.round(sizeScale * 100f));
         e.putInt(KEY_HIDE, autoHideSec);
+        e.putInt(KEY_ALPHA, Math.round(userAlpha * 100f));
         e.apply();
     }
 
     private void resetCtl(Ctl c) {
         c.visible = true;
         c.scale = sizeScale;
-        c.alpha = DEFAULT_ALPHA;
+        c.alpha = userAlpha;
         c.code = c.defCode;
         c.fx = -1f;
         c.fy = -1f;
@@ -398,6 +395,24 @@ public class ControllerOverlay extends RelativeLayout {
 
     private static float clampScale(float s) {
         return Math.max(0.5f, Math.min(2.0f, s));
+    }
+
+    private static float clampAlpha(float a) {
+        return Math.max(0.10f, Math.min(1.0f, a));
+    }
+
+    /** Opacidade dos controles (vinda do engine), em % (10..100). Salva automaticamente. */
+    public void setControlOpacity(int percent) {
+        final float a = clampAlpha(percent / 100f);
+        if (Math.abs(a - userAlpha) < 0.001f) return;
+        userAlpha = a;
+        uiHandler.post(new Runnable() {
+            @Override public void run() {
+                for (Ctl c : ctls) c.alpha = userAlpha;
+                savePrefs();
+                invalidate();
+            }
+        });
     }
 
     /** Tamanho dos controles (vindo do engine), em %. Salvo automaticamente. */
@@ -510,11 +525,8 @@ public class ControllerOverlay extends RelativeLayout {
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (editMode) {
+            // Sem contorno de selecao: o controle so e arrastado, nada e desenhado em volta dele
             for (Ctl c : ctls) drawCtl(canvas, c, true, 1f);
-            if (selected != null) {
-                float r = selected.radius(density) + 8f * density;
-                canvas.drawCircle(selected.cx, selected.cy, r, dashPaint);
-            }
         } else if (mode == MODE_FIGHT) {
             float vis = fightVisibility();
             if (vis > 0f) {
@@ -530,7 +542,7 @@ public class ControllerOverlay extends RelativeLayout {
             for (Ctl c : ctls) {
                 if (!c.visible || (c.tagOnly && !tagMode)) continue;
                 if (c == menuCtl && backVisible) continue;
-                drawCtl(canvas, c, false, PREVIEW_BOOST);
+                drawCtl(canvas, c, false, 1f); // opacidade real, para dar para ver o efeito da opcao
             }
             if (backVisible) drawBackButton(canvas);
         } else if (backVisible) {
@@ -547,7 +559,9 @@ public class ControllerOverlay extends RelativeLayout {
 
     private void drawCtl(Canvas canvas, Ctl c, boolean editing, float vis) {
         float r = c.radius(density);
-        float a = (c.visible ? c.alpha : 0.25f) * vis; // oculto: so aparece "fantasma" no editor
+        // No editor os controles nunca ficam quase invisiveis (senao nao da para arrasta-los com opacidade baixa)
+        float base = editing ? Math.max(c.alpha, 0.45f) : c.alpha;
+        float a = (c.visible ? base : 0.25f) * vis; // oculto: so aparece "fantasma" no editor
         if (c.type == TYPE_ANALOG && dpadMode) {
             drawDpad(canvas, c, r, a, editing);
         } else if (c.type == TYPE_ANALOG) {
@@ -621,7 +635,7 @@ public class ControllerOverlay extends RelativeLayout {
             fillPaint.setColor(Color.argb(70, 255, 255, 255));
             canvas.drawCircle(r.centerX(), r.centerY(), r.width() / 2f, fillPaint);
         }
-        drawBmp(canvas, backBitmap, r.centerX(), r.centerY(), r.width() * BTN_CANVAS, DEFAULT_ALPHA);
+        drawBmp(canvas, backBitmap, r.centerX(), r.centerY(), r.width() * BTN_CANVAS, Math.max(userAlpha, DEFAULT_ALPHA));
     }
 
     // ------------------------------------------------------------------
@@ -763,6 +777,8 @@ public class ControllerOverlay extends RelativeLayout {
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setTextSize(13f);
         b.setLetterSpacing(0.08f);
+        b.setSingleLine(true);
+        b.setMinHeight(dp(44));
         b.setTextColor(primary ? Color.WHITE : NEON_TEXT);
         b.setClickable(true);
         b.setFocusable(true);
@@ -810,14 +826,14 @@ public class ControllerOverlay extends RelativeLayout {
 
         LinearLayout buttons = new LinearLayout(context);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
-        TextView resetAll = neonButton(context, "Restaurar padr\u00e3o", false);
+        TextView resetAll = neonButton(context, "Restaurar", false);
         resetAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 confirmResetAll();
             }
         });
-        TextView done = neonButton(context, "Concluir", true);
+        TextView done = neonButton(context, "Conclu\u00eddo", true);
         done.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

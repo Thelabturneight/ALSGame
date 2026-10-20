@@ -1147,6 +1147,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                     mControllerOverlay.setControlSize(value);
                 }
                 return true;
+            case 9: // controls opacity, in percent (10..100)
+                if (mControllerOverlay != null) {
+                    mControllerOverlay.setControlOpacity(value);
+                }
+                return true;
             case 7: // seconds without touch before the fight controls fade out (0 = never)
                 if (mControllerOverlay != null) {
                     mControllerOverlay.setAutoHide(value);

@@ -85,6 +85,8 @@ README.md
 external/script/debug.lua
 external/script/main.lua
 external/script/menu.lua
+external/script/online.lua
+external/script/onlinecode.lua
 external/script/options.lua
 external/script/default.lua
 external/script/start.lua

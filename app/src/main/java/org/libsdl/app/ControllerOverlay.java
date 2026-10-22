@@ -32,7 +32,7 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
-import org.ikemen_engine.ikemen_go.R;
+import com.labsdevproductions.als.R;
 
 import java.util.ArrayList;
 import java.util.HashMap;

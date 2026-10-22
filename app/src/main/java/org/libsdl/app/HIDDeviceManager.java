@@ -27,10 +27,19 @@ import java.util.List;
 
 public class HIDDeviceManager {
     private static final String TAG = "hidapi";
-    private static final String ACTION_USB_PERMISSION = "org.ikemen_engine.ikemen_go.USB_PERMISSION";
+    private static final String ACTION_USB_PERMISSION = "com.labsdevproductions.als.USB_PERMISSION";
 
     private static HIDDeviceManager sManager;
     private static int sManagerRefCount = 0;
+
+    // Android 14 (targetSdk 34) exige informar se o receiver e exportado; sem isso o app fecha com SecurityException.
+    private void registerReceiverCompat(android.content.BroadcastReceiver receiver, IntentFilter filter) {
+        if (Build.VERSION.SDK_INT >= 33 /* Android 13 (TIRAMISU) */) {
+            mContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            mContext.registerReceiver(receiver, filter);
+        }
+    }
 
     public static HIDDeviceManager acquire(Context context) {
         if (sManagerRefCount == 0) {
@@ -193,7 +202,7 @@ public class HIDDeviceManager {
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         filter.addAction(HIDDeviceManager.ACTION_USB_PERMISSION);
-        mContext.registerReceiver(mUsbBroadcast, filter);
+        registerReceiverCompat(mUsbBroadcast, filter);
 
         for (UsbDevice usbDevice : mUsbManager.getDeviceList().values()) {
             handleUsbDeviceAttached(usbDevice);
@@ -404,7 +413,7 @@ public class HIDDeviceManager {
         IntentFilter filter = new IntentFilter();
         filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
         filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
-        mContext.registerReceiver(mBluetoothBroadcast, filter);
+        registerReceiverCompat(mBluetoothBroadcast, filter);
 
         if (mIsChromebook) {
             mHandler = new Handler(Looper.getMainLooper());

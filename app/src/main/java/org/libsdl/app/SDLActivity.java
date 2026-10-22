@@ -57,7 +57,7 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.ikemen_engine.ikemen_go.R;
+import com.labsdevproductions.als.R;
 
 import java.io.File;
 import java.util.Hashtable;

@@ -1,4 +1,4 @@
-# I.K.E.M.E.N-Go for Android
+# Anime LabStar (Android) - com.labsdevproductions.als
 
 ## Instructions for building (debug)
 

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name" translatable="false">I.K.E.M.E.N-Go</string>
+    <string name="app_name" translatable="false">Anime LabStar</string>
     <string name="prefs_key" translatable="false">"IkemenPrefs"</string>
     <string name="game_folder_key" translatable="false">game_folder</string>
     <string name="game_folder_str">Select Game Folder</string>

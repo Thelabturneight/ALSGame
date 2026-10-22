@@ -1,5 +1,5 @@
-video/ik_logo.webm
-video/ik_credits.webm
+video/als_logo.webm
+data/als_logo.def
 stages/stage3d_outline.def
 stages/stage0-720.sff
 stages/stage3d.def

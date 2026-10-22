@@ -1,14 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Replace com.test.game with the identifier of your game below, e.g.
-     com.gamemaker.game
--->
+<!-- Anime LabStar - com.labsdevproductions.als (targetSdk 34 / Android 14 definido no build.gradle) -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    android:versionCode="1"
-    android:versionName="1.0"
     android:installLocation="auto">
-
-    <!-- Force Target 21 -->
-    <uses-sdk android:maxSdkVersion="21" android:targetSdkVersion="30" />
 
     <!-- OpenGL ES 3.2 -->
     <uses-feature android:glEsVersion="0x00030002" android:required="true" />
